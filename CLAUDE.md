@@ -37,6 +37,19 @@ ff-session-manager/
 4. 运行 `go test ./pkg/...` 确保通过
 5. 运行 `go vet ./pkg/...` 确保无警告
 
-## 第一个工具包
+## 开发进度
 
-- `pkg/resultcollected/` — 基于扫描日志文件的结果采集工具，支持增量和全量两种模式。
+### 已完成
+
+- 项目骨架初始化：go.mod (Go 1.21)、.gitignore、CLAUDE.md
+- `pkg/resultcollected/` — 基于扫描日志文件的结果采集工具
+  - `types.go` — Rule、ExtensionField、ScanResult、ScanConfig 类型定义
+  - `scanner.go` — 共用扫描逻辑（规则排序、逐行匹配、扩展字段提取、context 超时 I/O）
+  - `incremental.go` — IncrementalScanner（偏移追踪、截断检测、Reset）
+  - `full.go` — ScanFull 全量扫描
+  - `scanner_test.go` — 23 个测试用例，全部通过
+- Git 仓库已初始化，remote origin 指向 `https://github.com/wjliu/ff-session-manager.git`，分支 main
+
+### 待完成
+
+- 其他工具包（待 specs/ 下新增设计文档后开发）
