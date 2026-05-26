@@ -10,6 +10,9 @@
 vendor/
 go.sum
 
+# Claude Code
+.claude/
+
 # IDE
 .idea/
 .vscode/
