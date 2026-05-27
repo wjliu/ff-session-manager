@@ -30,8 +30,16 @@ func compileRules(rules []Rule) error {
 	return nil
 }
 
-// openFile 打开文件，支持通过 context 取消以避免 NFS/IO 卡死。
-func openFile(ctx context.Context, filePath string) (*os.File, error) {
+// openFile 打开文件。
+// safeIO=false 时走直接 I/O 快速路径（默认）；safeIO=true 时通过 goroutine+channel 响应 context 取消。
+func openFile(ctx context.Context, filePath string, safeIO bool) (*os.File, error) {
+	if !safeIO {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return os.Open(filePath)
+	}
+
 	type result struct {
 		f   *os.File
 		err error
@@ -55,9 +63,25 @@ func openFile(ctx context.Context, filePath string) (*os.File, error) {
 	}
 }
 
-// readLinesFrom 从 reader 逐行读取，通过 context 控制超时。
-// 返回所有行内容及每行的起始字节偏移。
-func readLines(ctx context.Context, reader io.Reader, startOffset int64) ([]string, []int64, error) {
+// readLines 从 reader 逐行读取，返回行内容及每行的起始字节偏移。
+// safeIO=false 时走直接 I/O 快速路径（默认），仅在入口检查 context；safeIO=true 时每行读取可被 context 取消中断。
+func readLines(ctx context.Context, reader io.Reader, startOffset int64, safeIO bool) ([]string, []int64, error) {
+	if !safeIO {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		var lines []string
+		var offsets []int64
+		scanner := bufio.NewScanner(reader)
+		offset := startOffset
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+			offsets = append(offsets, offset)
+			offset += int64(len(scanner.Bytes()) + 1) // +1 for newline
+		}
+		return lines, offsets, scanner.Err()
+	}
+
 	type lineResult struct {
 		lines   []string
 		offsets []int64
@@ -214,8 +238,17 @@ func allStartPointsMatched(rules []Rule, line string) bool {
 	return !hasStartPoint // 如果没有规则定义起始点，直接认为已启动
 }
 
-// seekFile 在文件中定位，通过 context 控制超时。
-func seekFile(ctx context.Context, f *os.File, offset int64) error {
+// seekFile 在文件中定位。
+// safeIO=false 时走直接 I/O 快速路径（默认）；safeIO=true 时通过 goroutine+channel 响应 context 取消。
+func seekFile(ctx context.Context, f *os.File, offset int64, safeIO bool) error {
+	if !safeIO {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := f.Seek(offset, io.SeekStart)
+		return err
+	}
+
 	type result struct {
 		pos int64
 		err error

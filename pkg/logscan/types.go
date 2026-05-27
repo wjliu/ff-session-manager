@@ -58,6 +58,9 @@ type ScanConfig struct {
 	IncludeLineNum bool
 	// IncludeContextLineNum 是否包含命中行在上下文中的行号。
 	IncludeContextLineNum bool
+	// SafeIO 是否启用 NFS/IO 卡死防护。启用后所有 I/O 操作通过 goroutine+channel
+	// 包装以响应 context 取消，但会有额外调度开销。默认关闭，走直接 I/O 快速路径。
+	SafeIO bool
 }
 
 // compile 预编译规则中的正则表达式，避免每次匹配时重复编译。

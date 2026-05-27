@@ -567,3 +567,67 @@ func TestScanFullWithMultipleExtensionFields(t *testing.T) {
 		t.Errorf("expected user=admin, got %q", result.ExtensionFields["user"])
 	}
 }
+
+func TestScanFullSafeIO(t *testing.T) {
+	content := "ERROR: something failed\nWARN: warning\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
+		{Result: "warn", Keyword: "WARN", Detail: `WARN:.*`, Priority: 5},
+	}
+
+	ctx := context.Background()
+	config := &ScanConfig{SafeIO: true}
+	result, err := ScanFull(ctx, path, rules, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result with SafeIO")
+	}
+	if result.Rule.Result != "error" {
+		t.Errorf("expected error result, got %s", result.Rule.Result)
+	}
+}
+
+func TestIncrementalScannerSafeIO(t *testing.T) {
+	content := "ERROR: first\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
+	}
+
+	scanner := NewSafeIncrementalScanner(path)
+	ctx := context.Background()
+
+	results, err := scanner.Scan(ctx, rules, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].MatchedLine != "ERROR: first" {
+		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	}
+}
+
+func TestScanFullSafeIOContextCanceled(t *testing.T) {
+	content := "ERROR: test\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	config := &ScanConfig{SafeIO: true}
+
+	_, err := ScanFull(ctx, path, rules, config)
+	if err == nil {
+		t.Error("expected context canceled error with SafeIO")
+	}
+}

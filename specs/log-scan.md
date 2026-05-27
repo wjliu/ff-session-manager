@@ -90,6 +90,7 @@
 **ScanConfig** — 控制输出行为：
 - `ContextBefore`/`ContextAfter` 控制上下文行数。
 - `IncludeLineNum`/`IncludeContextLineNum` 分别控制是否填充行号字段。开关分离，按需启用以减少不必要的数据填充。
+- `SafeIO` 控制是否启用 NFS/IO 卡死防护。默认 false，走直接 I/O 快速路径；设为 true 时 I/O 操作通过 goroutine+channel 包装以响应 context 取消，但有额外调度开销。
 
 ### 共用扫描引擎 (`scanner.go`)
 
@@ -99,11 +100,11 @@
 
 2. **排序阶段**（`sortRules`）：按 Priority 降序排列规则。排序返回新切片而不修改原切片。优先级高的规则排在前面，匹配时优先命中。
 
-3. **I/O 阶段** — 所有文件操作通过 goroutine + channel + `select` 模式实现 context 取消：
-   - `openFile`：在 goroutine 中调用 `os.Open`，主 goroutine 通过 `select` 同时监听 context 取消和打开结果。若 context 已取消，在另一个 goroutine 中等待文件打开完成后关闭它，防止文件句柄泄漏。
-   - `readLines`：以 `bufio.Scanner` 逐行读取，同时记录每行的起始字节偏移量（`offset += len(line) + 1`，+1 为换行符）。上下文取消时立即返回 `ctx.Err()`。
-   - `seekFile`：在 goroutine 中执行 `f.Seek`，支持 context 超时控制。
-   - 此模式确保 NFS hang 住或 IO 卡死时，调用方能通过 context 超时或取消来中断阻塞。
+3. **I/O 阶段** — 双路径设计，通过 `safeIO bool` 参数切换：
+   - **快速路径（默认，`safeIO=false`）**：直接调用 `os.Open`、`bufio.Scanner`、`f.Seek`，仅在入口处检查 `ctx.Err()`。零额外 goroutine，零 channel 分配。适用于本地文件或高性能场景。
+   - **安全路径（`safeIO=true`）**：通过 goroutine + channel + `select` 模式包装 I/O 调用，context 取消时可立即中断阻塞。适用于 NFS 或网络文件系统等可能 hang 住的场景。
+   - 共用逻辑：`openFile`、`readLines`、`seekFile` 三个函数均接受 `safeIO` 参数。`readLines` 快速路径通过 `bufio.Scanner` 逐行读取并记录每行起始字节偏移（`offset += len(line) + 1`）。
+   - 安全路径中，若 context 在 `openFile` 返回前取消，泄漏的 goroutine 会在文件打开完成后将其关闭，防止句柄泄漏。
 
 4. **扫描阶段**（`scanLines`）— 核心匹配循环，返回所有命中结果：
    - 逐行遍历所有行内容。
@@ -128,10 +129,10 @@
 
 `ScanFull` 函数式入口：
 1. 编译规则（`compileRules`）。
-2. 通过 `openFile` 打开文件（支持 context 取消）。
-3. 通过 `readLines` 读取全部行内容和字节偏移（支持 context 取消）。
+2. 通过 `openFile` 打开文件（根据 `config.SafeIO` 选择快速/安全路径）。
+3. 通过 `readLines` 读取全部行内容和字节偏移（根据 `config.SafeIO` 选择路径）。
 4. 调用 `scanLines` 执行扫描，得到所有命中结果。
-5. 从所有命中结果中筛选举最高优先级的单条结果返回。若优先级相同，取最先命中的那条。
+5. 通过 `pickHighestPriority` 从所有命中结果中筛选举最高优先级的单条结果返回。若优先级相同，取最先命中的那条。
 
 全量扫描每次从文件开头完整处理，不记录状态。
 
@@ -141,6 +142,10 @@
 
 每次 `Scan` 调用将新增内容中所有命中行一并返回，不做优先级过滤。调用方自行决定如何使用这些结果（例如累积统计、阈值告警等）。
 
+**构造函数**：
+- `NewIncrementalScanner(filePath)` — 默认构造，走直接 I/O 快速路径。适合本地文件或多 scanner 并行的高性能场景。
+- `NewSafeIncrementalScanner(filePath)` — 安全构造，内部设置 `safeIO=true`。所有 I/O 通过 goroutine+channel 包装，适合 NFS 等可能 hang 住的场景。
+
 **状态管理**：
 - `path` 记录日志文件路径。
 - `offset` 记录上次读取结束的字节位置。每次 `Scan` 结束后更新为最后读取行的末尾偏移（`offsets[last] + len(lastLine) + 1`）。
@@ -148,11 +153,11 @@
 
 **增量扫描流程**（`Scan` 方法）：
 1. 加锁，编译规则。
-2. 打开文件（文件不存在时返回空结果而非报错，容忍日志文件延迟创建）。
+2. 通过 `openFile` 打开文件（根据 `s.safeIO` 选择路径；文件不存在时返回空结果而非报错）。
 3. `f.Stat()` 获取文件大小，与当前 `offset` 比较：
    - 若文件大小 < offset，说明文件被截断（如日志轮转），将 offset 重置为 0，从头开始扫描。
-4. `seekFile` 定位到 offset。
-5. `readLines` 从 offset 起读取新写入的行。
+4. 通过 `seekFile` 定位到 offset（根据 `s.safeIO` 选择路径）。
+5. 通过 `readLines` 从 offset 起读取新写入的行（根据 `s.safeIO` 选择路径）。
 6. `scanLines` 扫描新行，返回全部命中结果（不过滤）。
 7. 更新 offset。
 
@@ -162,7 +167,7 @@
 
 ### 测试覆盖 (`scanner_test.go`)
 
-共 23 个测试用例，覆盖以下场景：
+共 26 个测试用例，覆盖以下场景：
 - 规则编译（正常、无效正则、含起始点、含扩展字段）
 - 规则排序（优先级降序）
 - 行匹配（命中/未命中/空行）
@@ -170,5 +175,6 @@
 - 上下文行提取（正常、边界裁剪）
 - 起始点控制（有/无起始点规则）
 - 全量扫描（基本功能、上下文行数、起始点过滤、优先级语义、无匹配、空文件、context 取消）
-- 增量扫描（基本功能、无新内容返回空、Reset 重置、文件截断检测、文件不存在容错）
+- 增量扫描（基本功能、无新内容返回空、Reset 重置、文件截断检测、文件不存在容错、SafeIO 构造）
+- 全量扫描 SafeIO 路径（正常扫描、context 取消）
 - 多扩展字段提取

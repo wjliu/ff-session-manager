@@ -7,19 +7,20 @@ import (
 
 // ScanFull 全量扫描日志文件，从文件开头完整匹配所有内容。
 // 在所有命中结果中取优先级最高的单条返回；无匹配时返回 nil。
-// 支持通过 context 控制超时以应对 NFS/IO 卡死场景。
+// 设置 config.SafeIO=true 可启用 NFS/IO 卡死防护（有额外调度开销）。
 func ScanFull(ctx context.Context, filePath string, rules []Rule, config *ScanConfig) (*ScanResult, error) {
 	if err := compileRules(rules); err != nil {
 		return nil, err
 	}
 
-	f, err := openFile(ctx, filePath)
+	safeIO := config != nil && config.SafeIO
+	f, err := openFile(ctx, filePath, safeIO)
 	if err != nil {
 		return nil, fmt.Errorf("open file %s: %w", filePath, err)
 	}
 	defer f.Close()
 
-	lines, offsets, err := readLines(ctx, f, 0)
+	lines, offsets, err := readLines(ctx, f, 0, safeIO)
 	if err != nil {
 		return nil, fmt.Errorf("read file %s: %w", filePath, err)
 	}

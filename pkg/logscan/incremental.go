@@ -8,19 +8,27 @@ import (
 )
 
 // IncrementalScanner 增量扫描器，每次调用从上次结束位置继续扫描。
-// 确保日志内容不会遗漏，支持通过 context 处理 NFS/IO 卡死。
+// 确保日志内容不会遗漏。默认走直接 I/O 快速路径；如需 NFS/IO 卡死防护，
+// 使用 NewSafeIncrementalScanner 创建。
 //
 // 并发安全: Scan 方法不可并发调用，但 Reset 和 Offset 可在任意时候调用。
 type IncrementalScanner struct {
 	mu     sync.Mutex
 	path   string
 	offset int64
+	safeIO bool
 }
 
-// NewIncrementalScanner 创建一个增量扫描器。
+// NewIncrementalScanner 创建一个增量扫描器，走直接 I/O 快速路径。
 // 初始偏移为 0，即从文件开头开始扫描。
 func NewIncrementalScanner(filePath string) *IncrementalScanner {
 	return &IncrementalScanner{path: filePath}
+}
+
+// NewSafeIncrementalScanner 创建一个启用 NFS/IO 卡死防护的增量扫描器。
+// 所有 I/O 操作通过 goroutine+channel 包装以响应 context 取消，但有额外调度开销。
+func NewSafeIncrementalScanner(filePath string) *IncrementalScanner {
+	return &IncrementalScanner{path: filePath, safeIO: true}
 }
 
 // Scan 从上次扫描结束位置继续扫描文件。
@@ -34,7 +42,7 @@ func (s *IncrementalScanner) Scan(ctx context.Context, rules []Rule, config *Sca
 		return nil, err
 	}
 
-	f, err := openFile(ctx, s.path)
+	f, err := openFile(ctx, s.path, s.safeIO)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -52,11 +60,11 @@ func (s *IncrementalScanner) Scan(ctx context.Context, rules []Rule, config *Sca
 		s.offset = 0
 	}
 
-	if err := seekFile(ctx, f, s.offset); err != nil {
+	if err := seekFile(ctx, f, s.offset, s.safeIO); err != nil {
 		return nil, fmt.Errorf("seek file %s: %w", s.path, err)
 	}
 
-	lines, offsets, err := readLines(ctx, f, s.offset)
+	lines, offsets, err := readLines(ctx, f, s.offset, s.safeIO)
 	if err != nil {
 		return nil, fmt.Errorf("read file %s: %w", s.path, err)
 	}
