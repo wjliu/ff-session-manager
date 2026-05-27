@@ -216,21 +216,18 @@ func TestScanFull(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, nil)
+	result, err := ScanFull(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
-	if results[0].Rule.Result != "error_result" {
-		t.Errorf("first result should be error_result, got %s", results[0].Rule.Result)
+	if result.Rule.Result != "error_result" {
+		t.Errorf("expected error_result (priority 10 > warn priority 5), got %s", result.Rule.Result)
 	}
-	if results[0].ExtensionFields["code"] != "500" {
-		t.Errorf("expected code=500, got %s", results[0].ExtensionFields["code"])
-	}
-	if results[1].Rule.Result != "warn_result" {
-		t.Errorf("second result should be warn_result, got %s", results[1].Rule.Result)
+	if result.ExtensionFields["code"] != "500" {
+		t.Errorf("expected code=500, got %s", result.ExtensionFields["code"])
 	}
 }
 
@@ -249,25 +246,24 @@ func TestScanFullWithContext(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, config)
+	result, err := ScanFull(ctx, path, rules, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
-	r := results[0]
-	if r.MatchedLineNum != 3 {
-		t.Errorf("expected line num 3, got %d", r.MatchedLineNum)
+	if result.MatchedLineNum != 3 {
+		t.Errorf("expected line num 3, got %d", result.MatchedLineNum)
 	}
-	if r.ContextLineNum != 1 {
-		t.Errorf("expected context line num 1, got %d", r.ContextLineNum)
+	if result.ContextLineNum != 1 {
+		t.Errorf("expected context line num 1, got %d", result.ContextLineNum)
 	}
-	if len(r.ContextLines) != 3 {
-		t.Errorf("expected 3 context lines, got %d", len(r.ContextLines))
+	if len(result.ContextLines) != 3 {
+		t.Errorf("expected 3 context lines, got %d", len(result.ContextLines))
 	}
-	if r.ContextLines[0] != "line2" || r.ContextLines[1] != "ERROR: fail" || r.ContextLines[2] != "line4" {
-		t.Errorf("unexpected context: %v", r.ContextLines)
+	if result.ContextLines[0] != "line2" || result.ContextLines[1] != "ERROR: fail" || result.ContextLines[2] != "line4" {
+		t.Errorf("unexpected context: %v", result.ContextLines)
 	}
 }
 
@@ -286,15 +282,15 @@ func TestScanFullWithStartPoint(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, nil)
+	result, err := ScanFull(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
-	if !strings.Contains(results[0].MatchedLine, "captured") {
-		t.Errorf("expected captured error, got %q", results[0].MatchedLine)
+	if !strings.Contains(result.MatchedLine, "captured") {
+		t.Errorf("expected captured error, got %q", result.MatchedLine)
 	}
 }
 
@@ -308,15 +304,15 @@ func TestScanFullPriority(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, nil)
+	result, err := ScanFull(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
-	if results[0].Rule.Result != "high" {
-		t.Errorf("expected high priority rule, got %s", results[0].Rule.Result)
+	if result.Rule.Result != "high" {
+		t.Errorf("expected high priority rule, got %s", result.Rule.Result)
 	}
 }
 
@@ -329,12 +325,12 @@ func TestScanFullNoMatch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, nil)
+	result, err := ScanFull(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(results))
+	if result != nil {
+		t.Errorf("expected nil result, got %v", result)
 	}
 }
 
@@ -363,12 +359,12 @@ func TestScanFullEmptyFile(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, nil)
+	result, err := ScanFull(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(results))
+	if result != nil {
+		t.Errorf("expected nil result, got %v", result)
 	}
 }
 
@@ -557,17 +553,17 @@ func TestScanFullWithMultipleExtensionFields(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	results, err := ScanFull(ctx, path, rules, nil)
+	result, err := ScanFull(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
-	if results[0].ExtensionFields["code"] != "500" {
-		t.Errorf("expected code=500, got %q", results[0].ExtensionFields["code"])
+	if result.ExtensionFields["code"] != "500" {
+		t.Errorf("expected code=500, got %q", result.ExtensionFields["code"])
 	}
-	if results[0].ExtensionFields["user"] != "admin" {
-		t.Errorf("expected user=admin, got %q", results[0].ExtensionFields["user"])
+	if result.ExtensionFields["user"] != "admin" {
+		t.Errorf("expected user=admin, got %q", result.ExtensionFields["user"])
 	}
 }
