@@ -1,4 +1,4 @@
-# result-collected-based-on-scan-logs
+# log-scan
 
 基于扫描日志文件的内容提取工具，分为两种独立工具：
 

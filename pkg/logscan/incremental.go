@@ -1,4 +1,4 @@
-package resultcollected
+package logscan
 
 import (
 	"context"

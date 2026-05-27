@@ -1,6 +1,6 @@
-// Package resultcollected 基于扫描日志文件的结果采集工具。
-// 支持增量扫描和全量扫描两种模式，按优先级匹配规则并提取结果。
-package resultcollected
+// Package logscan 基于扫描日志文件的内容提取工具。
+// 包含结果采集（全量扫描，返回最高优先级单条结果）和内容采集（增量扫描，返回全部命中内容）两种模式。
+package logscan
 
 import "regexp"
 
