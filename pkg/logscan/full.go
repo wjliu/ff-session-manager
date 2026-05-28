@@ -37,7 +37,7 @@ func pickHighestPriority(results []ScanResult) *ScanResult {
 	}
 	best := &results[0]
 	for i := 1; i < len(results); i++ {
-		if results[i].Rule.Priority > best.Rule.Priority {
+		if results[i].Rule.Priority < best.Rule.Priority {
 			best = &results[i]
 		}
 	}

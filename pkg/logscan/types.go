@@ -12,7 +12,7 @@ type Rule struct {
 	Keyword string
 	// Detail 从日志中匹配内容的正则表达式。
 	Detail string
-	// Priority 优先级，数值越大优先级越高。采集时以高优先级规则命中的结果为准。
+	// Priority 优先级，数值越小优先级越高。采集时以高优先级规则命中的结果为准。
 	Priority int
 	// MatchStartPoint 匹配起始点正则。当日志行命中此模式后才开始采集，之前的内容忽略。
 	MatchStartPoint string
@@ -91,4 +91,53 @@ func (r *Rule) compile() error {
 		r.extFieldRe[ef.Name] = re
 	}
 	return nil
+}
+
+// CaseRule 定义一条 case 结果分类规则，用于 emulation 场景中判定 case 执行结果。
+// 一条 case 结束时，按优先级匹配 case_result_rules 以确定结果。
+type CaseRule struct {
+	// Result 结果标识，由用户自行定义（例如 "pass"、"fail"、"unknown"）。
+	Result string
+	// Keyword 关键字，用于快速判断结果的分类。
+	Keyword string
+	// Priority 优先级，数值越小优先级越高。
+	Priority int
+	// Pattern 匹配 case 结果的正则表达式。
+	Pattern string
+
+	detailRe *regexp.Regexp
+}
+
+// EmuRules 定义硬件仿真（Emulation）场景的采集规则。
+// 用于增量扫描中追踪 emulation session 生命周期和每个 case 的执行结果。
+type EmuRules struct {
+	// StartRules 匹配 emulation 开始的规则列表。非必填。
+	StartRules []string
+	// EndRules 匹配 emulation 结束的规则列表。必填。
+	EndRules []string
+	// CaseNameRules 提取 case 名称的规则列表，每个规则必须包含一个捕获组。必填。
+	CaseNameRules []string
+	// CaseStartRules 匹配 case 开始执行的规则列表。非必填。
+	CaseStartRules []string
+	// CaseEndRules 匹配 case 执行结束的规则列表。必填。
+	CaseEndRules []string
+	// CaseResultRules case 结果分类规则列表。必填。
+	CaseResultRules []CaseRule
+
+	startRe         []*regexp.Regexp
+	endRe           []*regexp.Regexp
+	caseNameRe      []*regexp.Regexp
+	caseStartRe     []*regexp.Regexp
+	caseEndRe       []*regexp.Regexp
+	sortedResultRules []CaseRule
+}
+
+// EmuCaseResult 表示一个收集到的 case 执行结果。
+type EmuCaseResult struct {
+	// CaseName case 名称，从 case_name_rules 的捕获组提取。
+	CaseName string
+	// Result 结果标识，由 case_result_rules 中匹配的 result 字段定义。
+	Result string
+	// Keyword 关键字标识，由 case_result_rules 中匹配的 keyword 字段定义。
+	Keyword string
 }

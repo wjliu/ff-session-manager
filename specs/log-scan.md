@@ -16,6 +16,35 @@
 - 匹配起始点：可选，当匹配起始点命中时再开始进行采集，否则前面的日志行内容可以直接忽略
 - 扩展字段：可选，除了匹配结果外，可以从该行或者临近的上下文中提取字段，规则中定义出提取的字段名和提取的正则表达式，提取出来的内容作为扩展字段值
 
+规则示例如下：
+```yaml
+- name: pattern1        # 以yaml格式为示例，每个规则的定义如下
+  default: fail         # 默认结果，必填
+  pass_rules:           # 结果为PASS的规则列表，规则中第一列为关键字，第二列为优先级（数值越小，优先级越高），第三列为正则表达式。pass_rules和fail_rules在采集结果时会合并到一起基于优先级排序后使用，必填
+  - test_passed,1,TEST PASSED
+  fail_rules:           # 结果为FAIL的规则列表，规则中第一列为关键字，第二列为优先级（数值越小，优先级越高），第三列为正则表达式，必填
+  - test_failed,2,TEST FAILED
+  exclude_rules:        # 采集结果是需要优先排除掉的规则列表，非必填
+  - "Not Error"
+  - "NOT ERROR"
+  emu_rules:            # 用于硬件仿真（Emulation）场景的采集规则，最主要的目标是采集本次Emulation过程中每个case的结果，非必填
+    start_rules:        # 可以定义一条或者多条规则来匹配emulation是否开始，非必填
+    - Emulation Start!
+    end_rules:          # 可以定义一条或者多条规则来匹配emulation是否结束，必填
+    - Emulation End!
+    case_name_rules:    # 可以定义一条或者多条规则来匹配case的名称，必填
+    - Case is (\w+)     # 匹配后提取捕获组即()中的内容作为case名称
+    - Case (\w+)
+    case_start_rules:   # 可以定义一条或者多条规则来匹配case是否开始执行，非必填
+    - Case .*, start to run
+    case_end_rules:     # 可以定义一条或者多条规则来匹配case是否执行结束，必填
+    - Case .* is completed
+    case_result_rules:  # 可以定义一条或者多条规则来匹配case执行结果，并且可以分类，必填
+    - paas,case_passed,1,Case .* is completed  # 需要注意，第一列的结果字段不在固定为PASS和FAIL，支持用户自行定义，FusionFlex仅要求该列是表示结果的定义。其他三个部分定义参考pass_rules和fail_rules
+    - fail,case_failed,1,Case .* is failed
+    - unknown,case_unknown,1,Case .* is unknown
+```
+
 
 ## 结果采集工具（全量扫描）
 

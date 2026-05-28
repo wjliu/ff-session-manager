@@ -10,12 +10,12 @@ import (
 	"strings"
 )
 
-// sortRules 按优先级降序排列规则，优先级高的在前。
+// sortRules 按优先级升序排列规则，优先级高的在前（数值越小优先级越高）。
 func sortRules(rules []Rule) []Rule {
 	sorted := make([]Rule, len(rules))
 	copy(sorted, rules)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Priority > sorted[j].Priority
+		return sorted[i].Priority < sorted[j].Priority
 	})
 	return sorted
 }
