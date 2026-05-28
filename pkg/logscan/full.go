@@ -5,10 +5,9 @@ import (
 	"fmt"
 )
 
-// ScanFull 全量扫描日志文件，从文件开头完整匹配所有内容。
-// 在所有命中结果中取优先级最高的单条返回；无匹配时返回 nil。
-// 设置 config.SafeIO=true 可启用 NFS/IO 卡死防护（有额外调度开销）。
-func ScanFull(ctx context.Context, filePath string, rules []Rule, config *ScanConfig) (*ScanResult, error) {
+// Scan 一次性全量扫描日志文件，返回优先级最高的单条命中结果。
+// 无匹配时返回 nil。设置 config.SafeIO=true 可启用 NFS/IO 卡死防护。
+func Scan(ctx context.Context, filePath string, rules []Rule, config *ScanConfig) (*ScanResult, error) {
 	if err := compileRules(rules); err != nil {
 		return nil, err
 	}

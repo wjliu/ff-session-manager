@@ -190,7 +190,9 @@ func createTempLogFile(t *testing.T, content string) string {
 	return path
 }
 
-func TestScanFull(t *testing.T) {
+// ---------- Scan (full) ----------
+
+func TestScan(t *testing.T) {
 	content := "INFO: starting\nERROR: something failed code=500\nINFO: processing\nWARN: low memory code=300\nINFO: done\n"
 	path := createTempLogFile(t, content)
 
@@ -213,7 +215,7 @@ func TestScanFull(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, nil)
+	result, err := Scan(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +230,7 @@ func TestScanFull(t *testing.T) {
 	}
 }
 
-func TestScanFullWithContext(t *testing.T) {
+func TestScanWithContext(t *testing.T) {
 	content := "line1\nline2\nERROR: fail\nline4\nline5\n"
 	path := createTempLogFile(t, content)
 
@@ -243,7 +245,7 @@ func TestScanFullWithContext(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, config)
+	result, err := Scan(ctx, path, rules, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +266,7 @@ func TestScanFullWithContext(t *testing.T) {
 	}
 }
 
-func TestScanFullWithStartPoint(t *testing.T) {
+func TestScanWithStartPoint(t *testing.T) {
 	content := "pre-processing\nERROR: ignored\nSTART\nERROR: captured\n"
 	path := createTempLogFile(t, content)
 
@@ -279,7 +281,7 @@ func TestScanFullWithStartPoint(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, nil)
+	result, err := Scan(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +293,7 @@ func TestScanFullWithStartPoint(t *testing.T) {
 	}
 }
 
-func TestScanFullPriority(t *testing.T) {
+func TestScanPriority(t *testing.T) {
 	content := "ERROR: something\n"
 	path := createTempLogFile(t, content)
 
@@ -301,7 +303,7 @@ func TestScanFullPriority(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, nil)
+	result, err := Scan(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +315,7 @@ func TestScanFullPriority(t *testing.T) {
 	}
 }
 
-func TestScanFullNoMatch(t *testing.T) {
+func TestScanNoMatch(t *testing.T) {
 	content := "INFO: all good\nDEBUG: nothing\n"
 	path := createTempLogFile(t, content)
 
@@ -322,7 +324,7 @@ func TestScanFullNoMatch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, nil)
+	result, err := Scan(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +333,7 @@ func TestScanFullNoMatch(t *testing.T) {
 	}
 }
 
-func TestScanFullContextCanceled(t *testing.T) {
+func TestScanContextCanceled(t *testing.T) {
 	content := "ERROR: test\n"
 	path := createTempLogFile(t, content)
 
@@ -342,13 +344,13 @@ func TestScanFullContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := ScanFull(ctx, path, rules, nil)
+	_, err := Scan(ctx, path, rules, nil)
 	if err == nil {
 		t.Error("expected context canceled error")
 	}
 }
 
-func TestScanFullEmptyFile(t *testing.T) {
+func TestScanEmptyFile(t *testing.T) {
 	path := createTempLogFile(t, "")
 
 	rules := []Rule{
@@ -356,7 +358,7 @@ func TestScanFullEmptyFile(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, nil)
+	result, err := Scan(ctx, path, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +367,95 @@ func TestScanFullEmptyFile(t *testing.T) {
 	}
 }
 
-func TestIncrementalScanner(t *testing.T) {
+func TestScanWithMultipleExtensionFields(t *testing.T) {
+	content := "ERROR: service failed code=500 user=admin\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{
+			Result:  "error",
+			Keyword: "ERROR",
+			Detail:  `ERROR:.*`,
+			Priority: 10,
+			ExtensionFields: []ExtensionField{
+				{Name: "code", Pattern: `code=(\d+)`},
+				{Name: "user", Pattern: `user=(\w+)`},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	result, err := Scan(ctx, path, rules, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.ExtensionFields["code"] != "500" {
+		t.Errorf("expected code=500, got %q", result.ExtensionFields["code"])
+	}
+	if result.ExtensionFields["user"] != "admin" {
+		t.Errorf("expected user=admin, got %q", result.ExtensionFields["user"])
+	}
+}
+
+func TestScanSafeIO(t *testing.T) {
+	content := "ERROR: something failed\nWARN: warning\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
+		{Result: "warn", Keyword: "WARN", Detail: `WARN:.*`, Priority: 2},
+	}
+
+	ctx := context.Background()
+	config := &ScanConfig{SafeIO: true}
+	result, err := Scan(ctx, path, rules, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result with SafeIO")
+	}
+	if result.Rule.Result != "error" {
+		t.Errorf("expected error result, got %s", result.Rule.Result)
+	}
+}
+
+func TestScanSafeIOContextCanceled(t *testing.T) {
+	content := "ERROR: test\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	config := &ScanConfig{SafeIO: true}
+
+	_, err := Scan(ctx, path, rules, config)
+	if err == nil {
+		t.Error("expected context canceled error with SafeIO")
+	}
+}
+
+// ---------- EmuScanner ----------
+
+// testEmuRules 返回一个永不会匹配日志内容的仿真规则，用于测试中仅验证常规扫描结果。
+func testEmuRules() *EmuRules {
+	return &EmuRules{
+		EndRules:       []string{`___NEVER___`},
+		CaseNameRules:  []string{`___NEVER___`},
+		CaseEndRules:   []string{`___NEVER___`},
+		CaseResultRules: []CaseRule{
+			{Result: "x", Keyword: "x", Priority: 1, Pattern: `___NEVER___`},
+		},
+	}
+}
+
+func TestEmuScanner(t *testing.T) {
 	content := "INFO: start\nERROR: first error\nINFO: middle\n"
 	path := createTempLogFile(t, content)
 
@@ -373,10 +463,10 @@ func TestIncrementalScanner(t *testing.T) {
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	results, err := scanner.Scan(ctx, rules, nil)
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,12 +492,12 @@ func TestIncrementalScanner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err = scanner.Scan(ctx, rules, nil)
+	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 1 {
-		t.Fatalf("expected 1 result from incremental scan, got %d", len(results))
+		t.Fatalf("expected 1 result from second scan, got %d", len(results))
 	}
 	if results[0].MatchedLine != "ERROR: second error" {
 		t.Errorf("unexpected match: %q", results[0].MatchedLine)
@@ -417,7 +507,7 @@ func TestIncrementalScanner(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerNoNewContent(t *testing.T) {
+func TestEmuScannerNoNewContent(t *testing.T) {
 	content := "ERROR: only error\n"
 	path := createTempLogFile(t, content)
 
@@ -425,10 +515,10 @@ func TestIncrementalScannerNoNewContent(t *testing.T) {
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	results, err := scanner.Scan(ctx, rules, nil)
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +526,7 @@ func TestIncrementalScannerNoNewContent(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 
-	results, err = scanner.Scan(ctx, rules, nil)
+	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +535,7 @@ func TestIncrementalScannerNoNewContent(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerReset(t *testing.T) {
+func TestEmuScannerReset(t *testing.T) {
 	content := "ERROR: first\nERROR: second\n"
 	path := createTempLogFile(t, content)
 
@@ -453,10 +543,10 @@ func TestIncrementalScannerReset(t *testing.T) {
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	results, err := scanner.Scan(ctx, rules, nil)
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +559,7 @@ func TestIncrementalScannerReset(t *testing.T) {
 		t.Errorf("expected offset 0 after reset, got %d", scanner.Offset())
 	}
 
-	results, err = scanner.Scan(ctx, rules, nil)
+	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +568,7 @@ func TestIncrementalScannerReset(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerFileTruncation(t *testing.T) {
+func TestEmuScannerFileTruncation(t *testing.T) {
 	content := "ERROR: first\nERROR: second\nERROR: third\n"
 	path := createTempLogFile(t, content)
 
@@ -486,10 +576,10 @@ func TestIncrementalScannerFileTruncation(t *testing.T) {
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	results, err := scanner.Scan(ctx, rules, nil)
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +591,7 @@ func TestIncrementalScannerFileTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err = scanner.Scan(ctx, rules, nil)
+	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,79 +600,26 @@ func TestIncrementalScannerFileTruncation(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerNonExistentFile(t *testing.T) {
-	scanner := NewIncrementalScanner("/nonexistent/path/test.log")
+func TestEmuScannerNonExistentFile(t *testing.T) {
+	scanner := NewEmuScanner("/nonexistent/path/test.log")
 	rules := []Rule{
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
 	}
 
 	ctx := context.Background()
-	results, err := scanner.Scan(ctx, rules, nil)
+	emuResults, scanResults, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for nonexistent file, got %d", len(results))
+	if len(emuResults) != 0 {
+		t.Errorf("expected 0 emu results, got %d", len(emuResults))
+	}
+	if len(scanResults) != 0 {
+		t.Errorf("expected 0 scan results, got %d", len(scanResults))
 	}
 }
 
-func TestScanFullWithMultipleExtensionFields(t *testing.T) {
-	content := "ERROR: service failed code=500 user=admin\n"
-	path := createTempLogFile(t, content)
-
-	rules := []Rule{
-		{
-			Result:  "error",
-			Keyword: "ERROR",
-			Detail:  `ERROR:.*`,
-			Priority: 10,
-			ExtensionFields: []ExtensionField{
-				{Name: "code", Pattern: `code=(\d+)`},
-				{Name: "user", Pattern: `user=(\w+)`},
-			},
-		},
-	}
-
-	ctx := context.Background()
-	result, err := ScanFull(ctx, path, rules, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.ExtensionFields["code"] != "500" {
-		t.Errorf("expected code=500, got %q", result.ExtensionFields["code"])
-	}
-	if result.ExtensionFields["user"] != "admin" {
-		t.Errorf("expected user=admin, got %q", result.ExtensionFields["user"])
-	}
-}
-
-func TestScanFullSafeIO(t *testing.T) {
-	content := "ERROR: something failed\nWARN: warning\n"
-	path := createTempLogFile(t, content)
-
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-		{Result: "warn", Keyword: "WARN", Detail: `WARN:.*`, Priority: 2},
-	}
-
-	ctx := context.Background()
-	config := &ScanConfig{SafeIO: true}
-	result, err := ScanFull(ctx, path, rules, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result with SafeIO")
-	}
-	if result.Rule.Result != "error" {
-		t.Errorf("expected error result, got %s", result.Rule.Result)
-	}
-}
-
-func TestIncrementalScannerSafeIO(t *testing.T) {
+func TestEmuScannerSafeIO(t *testing.T) {
 	content := "ERROR: first\n"
 	path := createTempLogFile(t, content)
 
@@ -590,10 +627,10 @@ func TestIncrementalScannerSafeIO(t *testing.T) {
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
 	}
 
-	scanner := NewSafeIncrementalScanner(path)
+	scanner := NewSafeEmuScanner(path)
 	ctx := context.Background()
 
-	results, err := scanner.Scan(ctx, rules, nil)
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,25 +642,7 @@ func TestIncrementalScannerSafeIO(t *testing.T) {
 	}
 }
 
-func TestScanFullSafeIOContextCanceled(t *testing.T) {
-	content := "ERROR: test\n"
-	path := createTempLogFile(t, content)
-
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	config := &ScanConfig{SafeIO: true}
-
-	_, err := ScanFull(ctx, path, rules, config)
-	if err == nil {
-		t.Error("expected context canceled error with SafeIO")
-	}
-}
-
-// ========== Emulation tests ==========
+// ---------- Emulation tests ----------
 
 func TestEmuRulesCompileSuccess(t *testing.T) {
 	rules := &EmuRules{
@@ -679,7 +698,6 @@ func TestEmuRulesCompileIdempotent(t *testing.T) {
 	if err := rules.compile(); err != nil {
 		t.Fatal(err)
 	}
-	// second call should be no-op
 	if err := rules.compile(); err != nil {
 		t.Fatal(err)
 	}
@@ -980,7 +998,7 @@ func TestEmuTrackerReset(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerScanEmu(t *testing.T) {
+func TestEmuScannerScan(t *testing.T) {
 	content := "START\nCase is test_001\nCase test_001 is completed\nCase is test_002\nCase test_002 is failed\nEND\n"
 	path := createTempLogFile(t, content)
 
@@ -998,10 +1016,10 @@ func TestIncrementalScannerScanEmu(t *testing.T) {
 		},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, scanResults, err := scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, scanResults, err := scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1019,7 +1037,7 @@ func TestIncrementalScannerScanEmu(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerScanEmuStatePersistence(t *testing.T) {
+func TestEmuScannerScanStatePersistence(t *testing.T) {
 	content := "START\nCase is test_001\n"
 	path := createTempLogFile(t, content)
 
@@ -1036,10 +1054,10 @@ func TestIncrementalScannerScanEmuStatePersistence(t *testing.T) {
 		},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, _, err := scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, _, err := scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1047,7 +1065,6 @@ func TestIncrementalScannerScanEmuStatePersistence(t *testing.T) {
 		t.Fatalf("expected 0 emu results (case not yet ended), got %d", len(emuResults))
 	}
 
-	// append more content
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		t.Fatal(err)
@@ -1058,7 +1075,7 @@ func TestIncrementalScannerScanEmuStatePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	emuResults, _, err = scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, _, err = scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1070,7 +1087,7 @@ func TestIncrementalScannerScanEmuStatePersistence(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerScanEmuTruncationReset(t *testing.T) {
+func TestEmuScannerScanTruncationReset(t *testing.T) {
 	content := "START\nCase is test_001\nCase test_001 is completed\nCase is test_002\nCase test_002 is completed\nEND\n"
 	path := createTempLogFile(t, content)
 
@@ -1087,10 +1104,10 @@ func TestIncrementalScannerScanEmuTruncationReset(t *testing.T) {
 		},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, _, err := scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, _, err := scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1098,12 +1115,11 @@ func TestIncrementalScannerScanEmuTruncationReset(t *testing.T) {
 		t.Fatalf("expected 2 emu results, got %d", len(emuResults))
 	}
 
-	// truncate to shorter content
 	if err := os.WriteFile(path, []byte("START\nCase is new_case\nCase new_case is completed\nEND\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	emuResults, _, err = scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, _, err = scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1115,8 +1131,8 @@ func TestIncrementalScannerScanEmuTruncationReset(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerScanEmuFileNotFound(t *testing.T) {
-	scanner := NewIncrementalScanner("/nonexistent/path/emu.log")
+func TestEmuScannerScanFileNotFound(t *testing.T) {
+	scanner := NewEmuScanner("/nonexistent/path/emu.log")
 	rules := []Rule{
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
 	}
@@ -1130,7 +1146,7 @@ func TestIncrementalScannerScanEmuFileNotFound(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	emuResults, scanResults, err := scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, scanResults, err := scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,47 +1158,7 @@ func TestIncrementalScannerScanEmuFileNotFound(t *testing.T) {
 	}
 }
 
-func TestIncrementalScannerScanEmuRulesChanged(t *testing.T) {
-	content := "START\nCase is test_001\n"
-	path := createTempLogFile(t, content)
-
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-	}
-	emuRules1 := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`},
-		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case .* is completed`},
-		},
-	}
-	emuRules2 := &EmuRules{
-		StartRules:     []string{`START_V2`},
-		EndRules:       []string{`END_V2`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
-		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
-		},
-	}
-
-	scanner := NewIncrementalScanner(path)
-	ctx := context.Background()
-
-	_, _, err := scanner.ScanEmu(ctx, rules, emuRules1, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, _, err = scanner.ScanEmu(ctx, rules, emuRules2, nil)
-	if err == nil {
-		t.Error("expected error when emu rules changed between calls")
-	}
-}
-
-func TestIncrementalScannerScanEmuWithScanResults(t *testing.T) {
+func TestEmuScannerScanWithScanResults(t *testing.T) {
 	content := "START\nERROR: something broke\nCase is test_001\nCase test_001 is completed\nEND\n"
 	path := createTempLogFile(t, content)
 
@@ -1199,10 +1175,10 @@ func TestIncrementalScannerScanEmuWithScanResults(t *testing.T) {
 		},
 	}
 
-	scanner := NewIncrementalScanner(path)
+	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, scanResults, err := scanner.ScanEmu(ctx, rules, emuRules, nil)
+	emuResults, scanResults, err := scanner.Scan(ctx, rules, emuRules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

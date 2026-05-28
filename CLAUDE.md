@@ -43,14 +43,15 @@ ff-session-manager/
 
 - 项目骨架初始化：go.mod (Go 1.21)、.gitignore、CLAUDE.md
 - `pkg/logscan/` — 基于扫描日志文件的内容提取工具（对应 `specs/log-scan.md`）
-  - 结果采集模式：`ScanFull` 全量扫描，返回最高优先级单条结果
-  - 内容采集模式：`IncrementalScanner` 增量扫描，返回全部命中内容
-  - `types.go` — Rule、ExtensionField、ScanResult、ScanConfig 类型定义
+  - 全文扫描：`Scan` 一次性全量扫描，返回最高优先级单条结果
+  - 仿真追踪：`EmuScanner` 跟随日志增长进行 emulation case 追踪，返回 case 结果 + 常规命中
+  - `types.go` — Rule、ExtensionField、ScanResult、ScanConfig、CaseRule、EmuRules、EmuCaseResult 类型定义
   - `scanner.go` — 共用扫描引擎（规则编译排序、双路径 I/O、逐行匹配、扩展字段/上下文提取）
-  - `incremental.go` — IncrementalScanner（偏移追踪、截断检测、Reset），提供 NewIncrementalScanner（快速路径）和 NewSafeIncrementalScanner（NFS 防护）两种构造
-  - `full.go` — ScanFull 全量扫描 + pickHighestPriority 结果筛选
-  - I/O 默认走直接调用快速路径；通过 ScanConfig.SafeIO 或 NewSafeIncrementalScanner 按需启用 goroutine+channel 防护
-  - `scanner_test.go` — 26 个测试用例（含 SafeIO 双路径和 context 取消），全部通过
+  - `emu.go` — EmuRules 预编译 + emuTracker 状态机（session/case 起止检测、结果分类）
+  - `incremental.go` — EmuScanner（偏移追踪、截断检测、Reset），提供 NewEmuScanner（快速路径）和 NewSafeEmuScanner（NFS 防护）两种构造
+  - `full.go` — Scan 全量扫描 + pickHighestPriority 结果筛选
+  - I/O 默认走直接调用快速路径；通过 ScanConfig.SafeIO 或 NewSafeEmuScanner 按需启用 goroutine+channel 防护
+  - `scanner_test.go` — 46 个测试用例（含 SafeIO 双路径、context 取消、emu 状态机），全部通过
 - Git 仓库已初始化，remote origin 指向 `https://github.com/wjliu/ff-session-manager.git`，分支 main
 
 ### 待完成
