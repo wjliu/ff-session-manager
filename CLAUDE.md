@@ -49,7 +49,7 @@ ff-session-manager/
   - `scanner.go` — 共用扫描引擎（规则编译排序、双路径 I/O、逐行匹配、扩展字段/上下文提取）
   - `emu.go` — EmuRules 预编译 + emuTracker 状态机（session/case 起止检测、结果分类）
   - `emuscanner.go` — EmuScanner（偏移追踪、截断检测、Reset），提供 NewEmuScanner（快速路径）和 NewSafeEmuScanner（NFS 防护）两种构造
-  - `full.go` — Scan 全量扫描 + pickHighestPriority 结果筛选
+  - `scan.go` — Scan 全量扫描 + pickHighestPriority 结果筛选
   - I/O 默认走直接调用快速路径；通过 ScanConfig.SafeIO 或 NewSafeEmuScanner 按需启用 goroutine+channel 防护
   - `scanner_test.go` — 46 个测试用例（含 SafeIO 双路径、context 取消、emu 状态机），全部通过
 - Git 仓库已初始化，remote origin 指向 `https://github.com/wjliu/ff-session-manager.git`，分支 main
