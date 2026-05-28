@@ -108,102 +108,80 @@
 
 **Rule** — 采集规则的核心数据结构：
 - 对外字段：`Result`、`Keyword`、`Detail`、`Priority`、`MatchStartPoint`、`ExtensionFields`，与上文规则定义一一对应。
-- 内部缓存字段（小写非导出）：`detailRe`、`startRe`、`extFieldRe`，通过 `compile()` 方法延迟预编译。预编译后的正则对象在后续匹配中重复使用，避免每次匹配都重新编译。
+- 内部缓存字段（小写非导出）：`detailRe`、`startRe`、`extFieldRe`，通过 `compile()` 方法延迟预编译。
+
+**CaseRule** — case 结果分类规则，用于 emulation 场景：
+- 对外字段：`Result`、`Keyword`、`Priority`、`Pattern`。
+- 内部缓存：`detailRe`（预编译正则）。
+
+**EmuRules** — 仿真采集规则容器：
+- 对外字段：`StartRules`、`EndRules`、`CaseNameRules`、`CaseStartRules`、`CaseEndRules`、`CaseResultRules`。
+- 内部缓存：各组预编译正则切片，`sortedResultRules` 按 Priority 升序排列。
+
+**EmuCaseResult** — 仿真 case 结果载体：`CaseName`、`Result`、`Keyword`。
 
 **ScanResult** — 命中结果的载体：
 - `Rule` 指针指向命中的规则，调用方可据此获取 `Result`、`Keyword` 等信息。
 - `MatchedLine` 为命中的原始行内容；`MatchedLineNum` 为文件中绝对行号（从 1 开始）。
-- `ContextLines` 包含命中行及其上下的内容；`ContextLineNum` 为命中行在 `ContextLines` 中的下标（从 0 开始），便于定位。
+- `ContextLines` 包含命中行及其上下的内容；`ContextLineNum` 为命中行在 `ContextLines` 中的下标（从 0 开始）。
 - `ExtensionFields` 为 `map[string]string`，存储从匹配行或上下文中提取的扩展字段。
 
 **ScanConfig** — 控制输出行为：
 - `ContextBefore`/`ContextAfter` 控制上下文行数。
-- `IncludeLineNum`/`IncludeContextLineNum` 分别控制是否填充行号字段。开关分离，按需启用以减少不必要的数据填充。
-- `SafeIO` 控制是否启用 NFS/IO 卡死防护。默认 false，走直接 I/O 快速路径；设为 true 时 I/O 操作通过 goroutine+channel 包装以响应 context 取消，但有额外调度开销。
+- `IncludeLineNum`/`IncludeContextLineNum` 分别控制是否填充行号字段。
+- `SafeIO` 控制是否启用 NFS/IO 卡死防护。默认 false，走直接 I/O 快速路径。
 
 ### 共用扫描引擎 (`scanner.go`)
 
 引擎按以下流水线处理日志：
 
-1. **编译阶段**（`compileRules`）：遍历所有 Rule，调用 `compile()` 预编译 Detail、MatchStartPoint 和每个 ExtensionField 的正则表达式。编译失败时立即返回错误，包含具体规则名。
+1. **编译阶段**（`compileRules`）：遍历所有 Rule，调用 `compile()` 预编译 Detail、MatchStartPoint 和每个 ExtensionField 的正则表达式。
 
-2. **排序阶段**（`sortRules`）：按 Priority 降序排列规则。排序返回新切片而不修改原切片。优先级高的规则排在前面，匹配时优先命中。
+2. **排序阶段**（`sortRules`）：按 Priority 升序排列（数值越小优先级越高），返回新切片不修改原切片。
 
 3. **I/O 阶段** — 双路径设计，通过 `safeIO bool` 参数切换：
-   - **快速路径（默认，`safeIO=false`）**：直接调用 `os.Open`、`bufio.Scanner`、`f.Seek`，仅在入口处检查 `ctx.Err()`。零额外 goroutine，零 channel 分配。适用于本地文件或高性能场景。
-   - **安全路径（`safeIO=true`）**：通过 goroutine + channel + `select` 模式包装 I/O 调用，context 取消时可立即中断阻塞。适用于 NFS 或网络文件系统等可能 hang 住的场景。
-   - 共用逻辑：`openFile`、`readLines`、`seekFile` 三个函数均接受 `safeIO` 参数。`readLines` 快速路径通过 `bufio.Scanner` 逐行读取并记录每行起始字节偏移（`offset += len(line) + 1`）。
-   - 安全路径中，若 context 在 `openFile` 返回前取消，泄漏的 goroutine 会在文件打开完成后将其关闭，防止句柄泄漏。
+   - **快速路径（默认）**：直接调用 `os.Open`、`bufio.Scanner`、`f.Seek`，零额外 goroutine。
+   - **安全路径（`safeIO=true`）**：通过 goroutine + channel + `select` 包装 I/O，context 取消时可立即中断。
 
-4. **扫描阶段**（`scanLines`）— 核心匹配循环，返回所有命中结果：
-   - 逐行遍历所有行内容。
-   - **起始点控制**：在尚未启动采集时，调用 `allStartPointsMatched` 检查当前行是否命中任一规则的 `MatchStartPoint`。若未命中则跳过该行。若所有规则都未定义起始点，则从第一行即启动。
-   - **规则匹配**：调用 `matchLine` 对当前行按优先级顺序依次匹配 `detailRe`。返回第一个匹配的规则索引（即优先级最高的命中规则）。
-   - **结果构造**：命中后通过 `extractContextLines` 提取上下文行，再通过 `buildResult` 构造 `ScanResult` 并追加到结果列表。
+4. **扫描阶段**（`scanLines`）— 核心匹配循环：
+   - 逐行遍历，起始点控制（`allStartPointsMatched`），按优先级匹配（`matchLine`），提取上下文（`extractContextLines`），构造结果（`buildResult`）。
 
-5. **上下文提取**（`extractContextLines`）：
-   - 根据配置的 `ContextBefore`/`ContextAfter` 计算窗口范围 `[matchIdx-before, matchIdx+after+1)`，边界裁剪到 `[0, len(lines)]`。
-   - 返回上下文行切片和命中行在其中的索引。
+5. **扩展字段提取**（`extractExtensionFields`）：先在匹配行提取，再在合并上下文文本上提取，行级别结果优先。
 
-6. **扩展字段提取**（`extractExtensionFields`）：
-   - 遍历规则的 ExtensionField 列表，用预编译的正则对文本执行 `FindStringSubmatch`，取第一个捕获组作为字段值。
-   - 若正则未匹配到捕获组，则该字段不出现于结果中。
-   - `buildResult` 中先在匹配行上提取，再在 `strings.Join(contextLines, "\n")` 合并文本上提取，两次结果合并，优先保留行级别的结果。
+### 全文扫描 (`scan.go`)
 
-7. **起始点判断**（`allStartPointsMatched`）：
-   - 遍历排序后的规则，若任一规则的 `startRe` 匹配当前行，则返回 true（启动采集）。
-   - 若没有任何规则定义了 `MatchStartPoint`，直接返回 true，即从文件开头开始采集。
+`Scan` 函数式入口：一次性读取完整文件，所有命中结果中取优先级最高的单条返回。无匹配返回 nil。每次从文件开头完整处理，不记录状态。
 
-### 结果采集 / 全量扫描 (`full.go`)
+### 仿真扫描 (`emuscanner.go`)
 
-`ScanFull` 函数式入口：
-1. 编译规则（`compileRules`）。
-2. 通过 `openFile` 打开文件（根据 `config.SafeIO` 选择快速/安全路径）。
-3. 通过 `readLines` 读取全部行内容和字节偏移（根据 `config.SafeIO` 选择路径）。
-4. 调用 `scanLines` 执行扫描，得到所有命中结果。
-5. 通过 `pickHighestPriority` 从所有命中结果中筛选举最高优先级的单条结果返回。若优先级相同，取最先命中的那条。
+`EmuScanner` 是有状态的扫描器，跟随日志文件增长进行 emulation 追踪。提供 `NewEmuScanner`（快速 I/O）和 `NewSafeEmuScanner`（NFS 防护）两种构造。
 
-全量扫描每次从文件开头完整处理，不记录状态。
+`Scan(ctx, rules, emuRules, config)` 方法：
+1. 首次调用以 emuRules 初始化追踪器，后续调用沿用已有追踪器。
+2. 打开文件、检测截断（截断时同步重置追踪器）、Seek 到 offset、读取新行。
+3. 新行逐条送入 `emuTracker.processLine` 驱动状态机。
+4. 同时通过 `scanLines` 进行常规规则匹配。
+5. 返回 `([]EmuCaseResult, []ScanResult, error)`。
 
-### 内容采集 / 增量扫描 (`incremental.go`)
+**状态管理**：`path`、`offset`（字节偏移）、`sync.Mutex` 保护。`Reset` 重置 offset 和追踪器；`Offset` 返回当前偏移。
 
-`IncrementalScanner` 是有状态的扫描器，设计目标是**持续收集所有匹配内容**。
+### 仿真状态机 (`emu.go`)
 
-每次 `Scan` 调用将新增内容中所有命中行一并返回，不做优先级过滤。调用方自行决定如何使用这些结果（例如累积统计、阈值告警等）。
+**EmuRules 编译**（`compile`）：预编译所有正则切片，CaseResultRules 按 Priority 升序排列。
 
-**构造函数**：
-- `NewIncrementalScanner(filePath)` — 默认构造，走直接 I/O 快速路径。适合本地文件或多 scanner 并行的高性能场景。
-- `NewSafeIncrementalScanner(filePath)` — 安全构造，内部设置 `safeIO=true`。所有 I/O 通过 goroutine+channel 包装，适合 NFS 等可能 hang 住的场景。
-
-**状态管理**：
-- `path` 记录日志文件路径。
-- `offset` 记录上次读取结束的字节位置。每次 `Scan` 结束后更新为最后读取行的末尾偏移（`offsets[last] + len(lastLine) + 1`）。
-- `sync.Mutex` 保护 `offset` 的读写，`Scan` 持有锁全程，`Reset` 和 `Offset` 单独加锁。
-
-**增量扫描流程**（`Scan` 方法）：
-1. 加锁，编译规则。
-2. 通过 `openFile` 打开文件（根据 `s.safeIO` 选择路径；文件不存在时返回空结果而非报错）。
-3. `f.Stat()` 获取文件大小，与当前 `offset` 比较：
-   - 若文件大小 < offset，说明文件被截断（如日志轮转），将 offset 重置为 0，从头开始扫描。
-4. 通过 `seekFile` 定位到 offset（根据 `s.safeIO` 选择路径）。
-5. 通过 `readLines` 从 offset 起读取新写入的行（根据 `s.safeIO` 选择路径）。
-6. `scanLines` 扫描新行，返回全部命中结果（不过滤）。
-7. 更新 offset。
-
-**并发安全**：`Scan` 不可并发调用（内部状态变更）。`Reset` 和 `Offset` 可在任意时刻调用，各自加锁保护。三者之间通过互斥锁保证无数据竞争。
-
-**截断检测**：通过 `f.Stat()` 获取当前文件大小并与记录的 offset 比较。若文件大小更小，判定文件已被外部截断（如日志 rotate），将 offset 重置为 0 重新扫描。若新文件大小仍小于 offset，下次 Scan 时会再次触发重置，确保最终收敛。
+**emuTracker 状态机**（`processLine`）：
+1. 未激活时检查 `startRe` → 激活 session
+2. 激活后优先检查 `endRe` → 结束 session（如有活跃 case 则 flush）
+3. 检查 `caseNameRe` → 提取 case 名称（捕获组）
+4. 检查 `caseStartRe` → 标记 case 开始；若无 start 规则则隐式开始
+5. 检查 `caseEndRe` → 按优先级匹配 `caseResultRe` 分类，产出 `EmuCaseResult`
 
 ### 测试覆盖 (`scanner_test.go`)
 
-共 26 个测试用例，覆盖以下场景：
-- 规则编译（正常、无效正则、含起始点、含扩展字段）
-- 规则排序（优先级降序）
-- 行匹配（命中/未命中/空行）
-- 扩展字段提取（单个、多个字段）
-- 上下文行提取（正常、边界裁剪）
-- 起始点控制（有/无起始点规则）
-- 全量扫描（基本功能、上下文行数、起始点过滤、优先级语义、无匹配、空文件、context 取消）
-- 增量扫描（基本功能、无新内容返回空、Reset 重置、文件截断检测、文件不存在容错、SafeIO 构造）
-- 全量扫描 SafeIO 路径（正常扫描、context 取消）
-- 多扩展字段提取
+共 45 个测试用例，覆盖：
+- 规则编译、排序、匹配、扩展字段/上下文提取、起始点控制
+- 全文扫描（基本功能、上下文、起始点过滤、优先级、无匹配、空文件、context 取消、SafeIO）
+- EmuScanner（基本扫描、无新内容、Reset、截断检测、文件不存在、SafeIO）
+- EmuRules 编译（正常、无效正则、空 result_rules、幂等）
+- emuTracker 状态机（session 起止、case 名称提取、结果分类、优先级决胜、多 case、隐式开始、idle 跳过、多 session、reset）
+- EmuScanner 集成（emu+scan 结果、状态跨调用保持、截断重置）
