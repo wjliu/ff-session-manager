@@ -65,6 +65,7 @@ func openFile(ctx context.Context, filePath string, safeIO bool) (*os.File, erro
 
 // readLines 从 reader 逐行读取，返回行内容及每行的起始字节偏移。
 // safeIO=false 时走直接 I/O 快速路径（默认），仅在入口检查 context；safeIO=true 时每行读取可被 context 取消中断。
+// 单行最大支持 10MB，超过此限制将返回 bufio.ErrTooLong。
 func readLines(ctx context.Context, reader io.Reader, startOffset int64, safeIO bool) ([]string, []int64, error) {
 	if !safeIO {
 		if err := ctx.Err(); err != nil {
@@ -73,6 +74,7 @@ func readLines(ctx context.Context, reader io.Reader, startOffset int64, safeIO 
 		var lines []string
 		var offsets []int64
 		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 		offset := startOffset
 		for scanner.Scan() {
 			lines = append(lines, scanner.Text())
@@ -92,6 +94,7 @@ func readLines(ctx context.Context, reader io.Reader, startOffset int64, safeIO 
 		var lines []string
 		var offsets []int64
 		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 		offset := startOffset
 		for scanner.Scan() {
 			lines = append(lines, scanner.Text())
@@ -197,7 +200,6 @@ func scanLines(lines []string, lineOffsets []int64, rules []Rule, config *ScanCo
 
 	for i, line := range lines {
 		if !started {
-			// 检查是否所有规则都有 startRe，如果有未命中的起始点则跳过
 			started = allStartPointsMatched(sortedRules, line)
 			if !started {
 				continue
