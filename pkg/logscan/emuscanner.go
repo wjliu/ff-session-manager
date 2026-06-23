@@ -31,6 +31,13 @@ func NewSafeEmuScanner(filePath string) *EmuScanner {
 	return &EmuScanner{path: filePath, safeIO: true}
 }
 
+// NewEmuScannerAtOffset 从指定字节偏移开始扫描，用于恢复上次扫描进度。
+// offset 通常来自上次 EmuScanner.Offset() 的返回值。
+// 若文件大小小于给定 offset（如文件被截断/重置），首次 Scan 时会自动归零并重置状态机。
+func NewEmuScannerAtOffset(filePath string, offset int64) *EmuScanner {
+	return &EmuScanner{path: filePath, offset: offset}
+}
+
 // Scan 从上次扫描结束位置继续扫描文件，并进行仿真状态追踪。
 // 返回仿真 case 结果列表和常规扫描结果列表。
 // 首次调用时使用给定的 emuRules 初始化追踪器，后续调用沿用已有追踪器。

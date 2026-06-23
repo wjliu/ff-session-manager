@@ -94,7 +94,7 @@ func (r *Rule) compile() error {
 }
 
 // CaseRule 定义一条 case 结果分类规则，用于 emulation 场景中判定 case 执行结果。
-// 一条 case 结束时，按优先级匹配 case_result_rules 以确定结果。
+// Pattern 中必须包含一个捕获组用于提取 case 名称。
 type CaseRule struct {
 	// Result 结果标识，由用户自行定义（例如 "pass"、"fail"、"unknown"）。
 	Result string
@@ -102,7 +102,7 @@ type CaseRule struct {
 	Keyword string
 	// Priority 优先级，数值越小优先级越高。
 	Priority int
-	// Pattern 匹配 case 结果的正则表达式。
+	// Pattern 匹配 case 结果的正则表达式，必须包含一个捕获组用于提取 case 名称。
 	Pattern string
 
 	detailRe *regexp.Regexp
@@ -111,24 +111,15 @@ type CaseRule struct {
 // EmuRules 定义硬件仿真（Emulation）场景的采集规则。
 // 用于增量扫描中追踪 emulation session 生命周期和每个 case 的执行结果。
 type EmuRules struct {
-	// StartRules 匹配 emulation 开始的规则列表。非必填。
-	StartRules []string
+	// BeginRules 匹配 emulation 开始的规则列表。非必填，为空时从第一行即视为 session 开始。
+	BeginRules []string
 	// EndRules 匹配 emulation 结束的规则列表。必填。
 	EndRules []string
-	// CaseNameRules 提取 case 名称的规则列表，每个规则必须包含一个捕获组。必填。
-	CaseNameRules []string
-	// CaseStartRules 匹配 case 开始执行的规则列表。非必填。
-	CaseStartRules []string
-	// CaseEndRules 匹配 case 执行结束的规则列表。必填。
-	CaseEndRules []string
-	// CaseResultRules case 结果分类规则列表。必填。
+	// CaseResultRules case 结果分类规则列表。每条规则的 Pattern 必须包含一个捕获组用于提取 case 名称。必填。
 	CaseResultRules []CaseRule
 
-	startRe         []*regexp.Regexp
-	endRe           []*regexp.Regexp
-	caseNameRe      []*regexp.Regexp
-	caseStartRe     []*regexp.Regexp
-	caseEndRe       []*regexp.Regexp
+	beginRe          []*regexp.Regexp
+	endRe            []*regexp.Regexp
 	sortedResultRules []CaseRule
 }
 

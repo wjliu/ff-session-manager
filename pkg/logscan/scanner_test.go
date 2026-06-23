@@ -446,9 +446,7 @@ func TestScanSafeIOContextCanceled(t *testing.T) {
 // testEmuRules 返回一个永不会匹配日志内容的仿真规则，用于测试中仅验证常规扫描结果。
 func testEmuRules() *EmuRules {
 	return &EmuRules{
-		EndRules:       []string{`___NEVER___`},
-		CaseNameRules:  []string{`___NEVER___`},
-		CaseEndRules:   []string{`___NEVER___`},
+		EndRules: []string{`___NEVER___`},
 		CaseResultRules: []CaseRule{
 			{Result: "x", Keyword: "x", Priority: 1, Pattern: `___NEVER___`},
 		},
@@ -642,17 +640,103 @@ func TestEmuScannerSafeIO(t *testing.T) {
 	}
 }
 
+func TestEmuScannerResumeFromOffset(t *testing.T) {
+	content := "ERROR: first\nERROR: second\nERROR: third\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
+	}
+
+	scanner := NewEmuScanner(path)
+	ctx := context.Background()
+
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	savedOffset := scanner.Offset()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("ERROR: fourth\nERROR: fifth\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate restart: create new scanner at saved offset
+	scanner2 := NewEmuScannerAtOffset(path, savedOffset)
+	_, results, err = scanner2.Scan(ctx, rules, testEmuRules(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 new results, got %d", len(results))
+	}
+	if results[0].MatchedLine != "ERROR: fourth" {
+		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	}
+	if results[1].MatchedLine != "ERROR: fifth" {
+		t.Errorf("unexpected match: %q", results[1].MatchedLine)
+	}
+}
+
+func TestEmuScannerResumeTruncationReset(t *testing.T) {
+	content := "ERROR: first\nERROR: second\n"
+	path := createTempLogFile(t, content)
+
+	rules := []Rule{
+		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
+	}
+
+	scanner := NewEmuScanner(path)
+	ctx := context.Background()
+
+	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	savedOffset := scanner.Offset()
+
+	// File truncated to smaller size
+	if err := os.WriteFile(path, []byte("ERROR: new only\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume with stale offset > new file size — should auto-reset
+	scanner2 := NewEmuScannerAtOffset(path, savedOffset)
+	_, results, err = scanner2.Scan(ctx, rules, testEmuRules(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result after truncation reset, got %d", len(results))
+	}
+	if results[0].MatchedLine != "ERROR: new only" {
+		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	}
+}
+
+
 // ---------- Emulation tests ----------
 
 func TestEmuRulesCompileSuccess(t *testing.T) {
 	rules := &EmuRules{
-		StartRules:     []string{`Emulation Start!`},
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`, `Case .* is failed`},
+		BeginRules: []string{`Emulation Start!`},
+		EndRules:   []string{`Emulation End!`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case .* is completed`},
-			{Result: "fail", Keyword: "case_failed", Priority: 2, Pattern: `Case .* is failed`},
+			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case (\w+) is completed`},
+			{Result: "fail", Keyword: "case_failed", Priority: 2, Pattern: `Case (\w+) is failed`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -668,18 +752,16 @@ func TestEmuRulesCompileSuccess(t *testing.T) {
 
 func TestEmuRulesCompileInvalidRegex(t *testing.T) {
 	rules := &EmuRules{
-		StartRules: []string{`[invalid`},
+		BeginRules: []string{`[invalid`},
 	}
 	if err := rules.compile(); err == nil {
-		t.Error("expected error for invalid regex in start_rules")
+		t.Error("expected error for invalid regex in begin_rules")
 	}
 }
 
 func TestEmuRulesCompileEmptyResultRules(t *testing.T) {
 	rules := &EmuRules{
-		EndRules:      []string{`End`},
-		CaseNameRules: []string{`Case (\w+)`},
-		CaseEndRules:  []string{`done`},
+		EndRules: []string{`End`},
 	}
 	if err := rules.compile(); err == nil {
 		t.Error("expected error for empty case_result_rules")
@@ -688,11 +770,9 @@ func TestEmuRulesCompileEmptyResultRules(t *testing.T) {
 
 func TestEmuRulesCompileIdempotent(t *testing.T) {
 	rules := &EmuRules{
-		EndRules:       []string{`End`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
+		EndRules: []string{`End`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `pass`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `(\w+)`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -705,12 +785,10 @@ func TestEmuRulesCompileIdempotent(t *testing.T) {
 
 func TestEmuTrackerSessionStart(t *testing.T) {
 	rules := &EmuRules{
-		StartRules:     []string{`Emulation Start!`},
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
+		BeginRules: []string{`Emulation Start!`},
+		EndRules:   []string{`Emulation End!`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) done`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -731,38 +809,9 @@ func TestEmuTrackerSessionStart(t *testing.T) {
 
 func TestEmuTrackerSessionEnd(t *testing.T) {
 	rules := &EmuRules{
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
+		EndRules: []string{`Emulation End!`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
-		},
-	}
-	if err := rules.compile(); err != nil {
-		t.Fatal(err)
-	}
-
-	tracker := &emuTracker{rules: rules, emuActive: true, caseActive: true, currentCaseName: "test1"}
-	tracker.processLine("Emulation End!")
-
-	if tracker.emuActive {
-		t.Error("expected emu not active after end line")
-	}
-	if len(tracker.results) != 1 {
-		t.Fatalf("expected 1 flushed result, got %d", len(tracker.results))
-	}
-	if tracker.results[0].CaseName != "test1" {
-		t.Errorf("expected case name test1, got %s", tracker.results[0].CaseName)
-	}
-}
-
-func TestEmuTrackerCaseNameExtraction(t *testing.T) {
-	rules := &EmuRules{
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`done`},
-		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) done`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -770,37 +819,36 @@ func TestEmuTrackerCaseNameExtraction(t *testing.T) {
 	}
 
 	tracker := &emuTracker{rules: rules, emuActive: true}
-	tracker.processLine("Case is test_001")
+	tracker.processLine("Case test1 done") // should produce result while active
+	tracker.processLine("Emulation End!")  // ends session
 
-	if tracker.currentCaseName != "test_001" {
-		t.Errorf("expected case name test_001, got %s", tracker.currentCaseName)
+	if tracker.emuActive {
+		t.Error("expected emu not active after end line")
+	}
+	// Result produced before end should still be there
+	results := tracker.flushResults()
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].CaseName != "test1" {
+		t.Errorf("expected case name test1, got %s", results[0].CaseName)
 	}
 }
 
-func TestEmuTrackerCaseResultClassification(t *testing.T) {
+func TestEmuTrackerCaseResultMatching(t *testing.T) {
 	rules := &EmuRules{
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`},
+		EndRules: []string{`Emulation End!`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case .* is completed`},
+			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case (\w+) is completed`},
 		},
 	}
 	if err := rules.compile(); err != nil {
 		t.Fatal(err)
 	}
 
-	tracker := &emuTracker{
-		rules:           rules,
-		emuActive:       true,
-		caseActive:      true,
-		currentCaseName: "test_001",
-	}
+	tracker := &emuTracker{rules: rules, emuActive: true}
 	tracker.processLine("Case test_001 is completed")
 
-	if tracker.caseActive {
-		t.Error("expected case not active after end")
-	}
 	if len(tracker.results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(tracker.results))
 	}
@@ -812,24 +860,17 @@ func TestEmuTrackerCaseResultClassification(t *testing.T) {
 
 func TestEmuTrackerCaseResultPriority(t *testing.T) {
 	rules := &EmuRules{
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`Case .* is done`},
+		EndRules: []string{`Emulation End!`},
 		CaseResultRules: []CaseRule{
-			{Result: "low_priority", Keyword: "low", Priority: 10, Pattern: `Case .* is done`},
-			{Result: "high_priority", Keyword: "high", Priority: 1, Pattern: `Case .* is done`},
+			{Result: "low_priority", Keyword: "low", Priority: 10, Pattern: `Case (\w+) is done`},
+			{Result: "high_priority", Keyword: "high", Priority: 1, Pattern: `Case (\w+) is done`},
 		},
 	}
 	if err := rules.compile(); err != nil {
 		t.Fatal(err)
 	}
 
-	tracker := &emuTracker{
-		rules:           rules,
-		emuActive:       true,
-		caseActive:      true,
-		currentCaseName: "test_001",
-	}
+	tracker := &emuTracker{rules: rules, emuActive: true}
 	tracker.processLine("Case test_001 is done")
 
 	if len(tracker.results) != 1 {
@@ -842,14 +883,11 @@ func TestEmuTrackerCaseResultPriority(t *testing.T) {
 
 func TestEmuTrackerMultipleCases(t *testing.T) {
 	rules := &EmuRules{
-		StartRules:     []string{`Emulation Start!`},
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseStartRules: []string{`Case .*, start to run`},
-		CaseEndRules:   []string{`Case .* is completed`, `Case .* is failed`},
+		BeginRules: []string{`Emulation Start!`},
+		EndRules:   []string{`Emulation End!`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case .* is completed`},
-			{Result: "fail", Keyword: "case_failed", Priority: 1, Pattern: `Case .* is failed`},
+			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case (\w+) is completed`},
+			{Result: "fail", Keyword: "case_failed", Priority: 1, Pattern: `Case (\w+) is failed`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -859,11 +897,7 @@ func TestEmuTrackerMultipleCases(t *testing.T) {
 	tracker := &emuTracker{rules: rules}
 	lines := []string{
 		"Emulation Start!",
-		"Case is test_001",
-		"Case test_001, start to run",
 		"Case test_001 is completed",
-		"Case is test_002",
-		"Case test_002, start to run",
 		"Case test_002 is failed",
 		"Emulation End!",
 	}
@@ -883,35 +917,12 @@ func TestEmuTrackerMultipleCases(t *testing.T) {
 	}
 }
 
-func TestEmuTrackerImplicitCaseStart(t *testing.T) {
-	rules := &EmuRules{
-		EndRules:       []string{`Emulation End!`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`},
-		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case .* is completed`},
-		},
-	}
-	if err := rules.compile(); err != nil {
-		t.Fatal(err)
-	}
-
-	tracker := &emuTracker{rules: rules, emuActive: true}
-	tracker.processLine("Case is test_001")
-
-	if !tracker.caseActive {
-		t.Error("expected case to start implicitly when no case_start_rules defined")
-	}
-}
-
 func TestEmuTrackerIdleLinesSkipped(t *testing.T) {
 	rules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) done`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -920,22 +931,22 @@ func TestEmuTrackerIdleLinesSkipped(t *testing.T) {
 
 	tracker := &emuTracker{rules: rules}
 	tracker.processLine("some idle line")
-	tracker.processLine("Case is test_001")
-	tracker.processLine("done")
+	tracker.processLine("Case test_001 done") // before session start, should be ignored
 
 	if tracker.emuActive {
-		t.Error("expected idle lines to be skipped before start")
+		t.Error("expected idle lines to be skipped before session start")
+	}
+	if len(tracker.results) != 0 {
+		t.Error("expected no results before session start")
 	}
 }
 
 func TestEmuTrackerMultipleSessions(t *testing.T) {
 	rules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`done`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) done`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -946,8 +957,7 @@ func TestEmuTrackerMultipleSessions(t *testing.T) {
 
 	// session 1
 	tracker.processLine("START")
-	tracker.processLine("Case is case1")
-	tracker.processLine("done")
+	tracker.processLine("Case case1 done")
 	tracker.processLine("END")
 
 	results1 := tracker.flushResults()
@@ -957,8 +967,7 @@ func TestEmuTrackerMultipleSessions(t *testing.T) {
 
 	// session 2
 	tracker.processLine("START")
-	tracker.processLine("Case is case2")
-	tracker.processLine("done")
+	tracker.processLine("Case case2 done")
 	tracker.processLine("END")
 
 	results2 := tracker.flushResults()
@@ -969,12 +978,10 @@ func TestEmuTrackerMultipleSessions(t *testing.T) {
 
 func TestEmuTrackerReset(t *testing.T) {
 	rules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) done`},
 		},
 	}
 	if err := rules.compile(); err != nil {
@@ -983,36 +990,30 @@ func TestEmuTrackerReset(t *testing.T) {
 
 	tracker := &emuTracker{rules: rules}
 	tracker.processLine("START")
-	tracker.processLine("Case is test1")
-	tracker.caseActive = true
+	tracker.processLine("Case test1 done")
 
 	tracker.reset()
 	if tracker.emuActive {
 		t.Error("expected emuActive false after reset")
 	}
-	if tracker.caseActive {
-		t.Error("expected caseActive false after reset")
-	}
-	if tracker.currentCaseName != "" {
-		t.Errorf("expected empty name after reset, got %s", tracker.currentCaseName)
+	if len(tracker.results) != 0 {
+		t.Error("expected empty results after reset")
 	}
 }
 
 func TestEmuScannerScan(t *testing.T) {
-	content := "START\nCase is test_001\nCase test_001 is completed\nCase is test_002\nCase test_002 is failed\nEND\n"
+	content := "START\nCase test_001 is completed\nCase test_002 is failed\nEND\n"
 	path := createTempLogFile(t, content)
 
 	rules := []Rule{
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
 	}
 	emuRules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`, `Case .* is failed`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case .* is completed`},
-			{Result: "fail", Keyword: "case_failed", Priority: 1, Pattern: `Case .* is failed`},
+			{Result: "pass", Keyword: "case_passed", Priority: 1, Pattern: `Case (\w+) is completed`},
+			{Result: "fail", Keyword: "case_failed", Priority: 1, Pattern: `Case (\w+) is failed`},
 		},
 	}
 
@@ -1038,19 +1039,17 @@ func TestEmuScannerScan(t *testing.T) {
 }
 
 func TestEmuScannerScanStatePersistence(t *testing.T) {
-	content := "START\nCase is test_001\n"
+	content := "START\n"
 	path := createTempLogFile(t, content)
 
 	rules := []Rule{
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
 	}
 	emuRules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case .* is completed`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) is completed`},
 		},
 	}
 
@@ -1062,7 +1061,7 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(emuResults) != 0 {
-		t.Fatalf("expected 0 emu results (case not yet ended), got %d", len(emuResults))
+		t.Fatalf("expected 0 emu results (no case matched yet), got %d", len(emuResults))
 	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
@@ -1080,7 +1079,7 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(emuResults) != 1 {
-		t.Fatalf("expected 1 emu result after case ended, got %d", len(emuResults))
+		t.Fatalf("expected 1 emu result after case matched, got %d", len(emuResults))
 	}
 	if emuResults[0].CaseName != "test_001" || emuResults[0].Result != "pass" {
 		t.Errorf("unexpected emu result: %+v", emuResults[0])
@@ -1088,19 +1087,17 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 }
 
 func TestEmuScannerScanTruncationReset(t *testing.T) {
-	content := "START\nCase is test_001\nCase test_001 is completed\nCase is test_002\nCase test_002 is completed\nEND\n"
+	content := "START\nCase test_001 is completed\nCase test_002 is completed\nEND\n"
 	path := createTempLogFile(t, content)
 
 	rules := []Rule{
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
 	}
 	emuRules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case .* is completed`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) is completed`},
 		},
 	}
 
@@ -1115,7 +1112,7 @@ func TestEmuScannerScanTruncationReset(t *testing.T) {
 		t.Fatalf("expected 2 emu results, got %d", len(emuResults))
 	}
 
-	if err := os.WriteFile(path, []byte("START\nCase is new_case\nCase new_case is completed\nEND\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("START\nCase new_case is completed\nEND\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1137,11 +1134,9 @@ func TestEmuScannerScanFileNotFound(t *testing.T) {
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
 	}
 	emuRules := &EmuRules{
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case (\w+)`},
-		CaseEndRules:   []string{`done`},
+		EndRules: []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `done`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) done`},
 		},
 	}
 
@@ -1159,19 +1154,17 @@ func TestEmuScannerScanFileNotFound(t *testing.T) {
 }
 
 func TestEmuScannerScanWithScanResults(t *testing.T) {
-	content := "START\nERROR: something broke\nCase is test_001\nCase test_001 is completed\nEND\n"
+	content := "START\nERROR: something broke\nCase test_001 is completed\nEND\n"
 	path := createTempLogFile(t, content)
 
 	rules := []Rule{
 		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
 	}
 	emuRules := &EmuRules{
-		StartRules:     []string{`START`},
-		EndRules:       []string{`END`},
-		CaseNameRules:  []string{`Case is (\w+)`},
-		CaseEndRules:   []string{`Case .* is completed`},
+		BeginRules: []string{`START`},
+		EndRules:   []string{`END`},
 		CaseResultRules: []CaseRule{
-			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case .* is completed`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) is completed`},
 		},
 	}
 

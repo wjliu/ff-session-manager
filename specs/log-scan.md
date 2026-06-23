@@ -25,10 +25,8 @@
 
 用于 emulation 场景，定义 session 和 case 的生命周期追踪规则。仅由 `EmuScanner` 使用：
 
-- `StartRules` / `EndRules` — 匹配 emulation session 起止，EndRules 必填
-- `CaseNameRules` — 提取 case 名称，必须包含一个捕获组，必填
-- `CaseStartRules` / `CaseEndRules` — 匹配 case 起止，CaseEndRules 必填
-- `CaseResultRules` — case 结果分类规则列表（`Result,Keyword,Priority,Pattern`），必填
+- `BeginRules` / `EndRules` — 匹配 emulation session 起止，EndRules 必填
+- `CaseResultRules` — case 结果分类规则列表（`Result,Keyword,Priority,Pattern`），其中Pattern部分中必须包含一个捕获组，用于提取Case名称，必填
 
 规则示例如下：
 ```yaml
@@ -41,22 +39,15 @@
   exclude_rules:        # 采集结果是需要优先排除掉的规则列表，非必填
   - "Not Error"
   - "NOT ERROR"
-  emu_rules:            # 用于硬件仿真（Emulation）场景的采集规则，最主要的目标是采集本次Emulation过程中每个case的结果，非必填
-    start_rules:        # 可以定义一条或者多条规则来匹配emulation是否开始，非必填
+  emulation:            # 用于硬件仿真（Emulation）场景的采集规则，最主要的目标是采集本次Emulation过程中每个case的结果，非必填
+    begin_rules:        # 可以定义一条或者多条规则来匹配emulation是否开始，必填
     - Emulation Start!
     end_rules:          # 可以定义一条或者多条规则来匹配emulation是否结束，必填
     - Emulation End!
-    case_name_rules:    # 可以定义一条或者多条规则来匹配case的名称，必填
-    - Case is (\w+)     # 匹配后提取捕获组即()中的内容作为case名称
-    - Case (\w+)
-    case_start_rules:   # 可以定义一条或者多条规则来匹配case是否开始执行，非必填
-    - Case .*, start to run
-    case_end_rules:     # 可以定义一条或者多条规则来匹配case是否执行结束，必填
-    - Case .* is completed
-    case_result_rules:  # 可以定义一条或者多条规则来匹配case执行结果，并且可以分类，必填
-    - paas,case_passed,1,Case .* is completed  # 需要注意，第一列的结果字段不在固定为PASS和FAIL，支持用户自行定义，FusionFlex仅要求该列是表示结果的定义。其他三个部分定义参考pass_rules和fail_rules
-    - fail,case_failed,1,Case .* is failed
-    - unknown,case_unknown,1,Case .* is unknown
+    case_pass_rules:  # 可以定义一条或者多条规则来匹配case执行pass的结果，并且可以分类，必填
+    - case_passed,1,Case (.*) is completed  # 规则中第一列为关键字，第二列为优先级（数值越小，优先级越高），第三列为正则表达式。第三列正则表达式的捕获组表示捕获的case名称，需要提取出来作为case名称返回
+    case_fail_rules:  # 可以定义一条或者多条规则来匹配case执行fail的结果，并且可以分类，必填
+    - case_failed,1,Case (.*) is failed  # 规则中第一列为关键字，第二列为优先级（数值越小，优先级越高），第三列为正则表达式。第三列正则表达式的捕获组表示捕获的case名称，需要提取出来作为case名称返回
 ```
 
 
@@ -145,12 +136,12 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 - 内部缓存字段（小写非导出）：`detailRe`、`startRe`、`extFieldRe`，通过 `compile()` 方法延迟预编译。
 
 **CaseRule** — case 结果分类规则，用于 emulation 场景：
-- 对外字段：`Result`、`Keyword`、`Priority`、`Pattern`。
+- 对外字段：`Result`、`Keyword`、`Priority`、`Pattern`。`Pattern` 必须包含一个捕获组用于提取 case 名称。
 - 内部缓存：`detailRe`（预编译正则）。
 
 **EmuRules** — 仿真采集规则容器：
-- 对外字段：`StartRules`、`EndRules`、`CaseNameRules`、`CaseStartRules`、`CaseEndRules`、`CaseResultRules`。
-- 内部缓存：各组预编译正则切片，`sortedResultRules` 按 Priority 升序排列。
+- 对外字段：`BeginRules`、`EndRules`、`CaseResultRules`。
+- 内部缓存：`beginRe`/`endRe` 预编译正则切片，`sortedResultRules` 按 Priority 升序排列。
 
 **EmuCaseResult** — 仿真 case 结果载体：`CaseName`、`Result`、`Keyword`。
 
@@ -204,18 +195,16 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 **EmuRules 编译**（`compile`）：预编译所有正则切片，CaseResultRules 按 Priority 升序排列。
 
 **emuTracker 状态机**（`processLine`）：
-1. 未激活时检查 `startRe` → 激活 session
-2. 激活后优先检查 `endRe` → 结束 session（如有活跃 case 则 flush）
-3. 检查 `caseNameRe` → 提取 case 名称（捕获组）
-4. 检查 `caseStartRe` → 标记 case 开始；若无 start 规则则隐式开始
-5. 检查 `caseEndRe` → 按优先级匹配 `caseResultRe` 分类，产出 `EmuCaseResult`
+1. 未激活时检查 `beginRe` → 激活 session
+2. 激活后优先检查 `endRe` → 结束 session
+3. 激活后按优先级匹配 `sortedResultRules` → 命中后从 Pattern 捕获组提取 case 名称，产出 `EmuCaseResult`（`Result`/`Keyword` 分别取自 `CaseRule.Result`/`CaseRule.Keyword`）
 
 ### 测试覆盖 (`scanner_test.go`)
 
 共 45 个测试用例，覆盖：
 - 规则编译、排序、匹配、扩展字段/上下文提取、起始点控制
 - 全文扫描（基本功能、上下文、起始点过滤、优先级、无匹配、空文件、context 取消、SafeIO）
-- EmuScanner（基本扫描、无新内容、Reset、截断检测、文件不存在、SafeIO）
+- EmuScanner（基本扫描、无新内容、Reset、截断检测、文件不存在、SafeIO、offset 恢复、恢复后截断重置）
 - EmuRules 编译（正常、无效正则、空 result_rules、幂等）
-- emuTracker 状态机（session 起止、case 名称提取、结果分类、优先级决胜、多 case、隐式开始、idle 跳过、多 session、reset）
+- emuTracker 状态机（session 起止、case 结果匹配、优先级决胜、多 case、idle 跳过、多 session、reset）
 - EmuScanner 集成（emu+scan 结果、状态跨调用保持、截断重置）
