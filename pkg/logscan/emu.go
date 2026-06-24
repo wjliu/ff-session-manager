@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // compile 预编译 EmuRules 中的所有正则表达式。
@@ -47,6 +49,52 @@ func (e *EmuRules) compile() error {
 	})
 
 	return nil
+}
+
+// NewEmuRules 根据规则字符串切片构造 EmuRules。
+// beginRules 和 endRules 为原始正则字符串，可以为 nil 或空切片（beginRules 为空时从第一行激活 session）。
+// casePassRules 和 caseFailRules 中每条字符串格式为 "keyword,priority,pattern"，
+// 其中 priority 为整数（数值越小优先级越高），pattern 为正则表达式且必须包含一个捕获组用于提取 case 名称。
+// pass 规则的 Result 固定为 "pass"，fail 规则的 Result 固定为 "fail"。
+func NewEmuRules(beginRules, endRules, casePassRules, caseFailRules []string) (*EmuRules, error) {
+	rules := &EmuRules{
+		BeginRules: beginRules,
+		EndRules:   endRules,
+	}
+
+	parseCaseRule := func(s string, result string) (CaseRule, error) {
+		parts := strings.SplitN(s, ",", 3)
+		if len(parts) != 3 {
+			return CaseRule{}, fmt.Errorf("invalid case rule %q: expected format \"keyword,priority,pattern\"", s)
+		}
+		priority, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return CaseRule{}, fmt.Errorf("invalid priority in case rule %q: %w", s, err)
+		}
+		return CaseRule{
+			Result:   result,
+			Keyword:  strings.TrimSpace(parts[0]),
+			Priority: priority,
+			Pattern:  strings.TrimSpace(parts[2]),
+		}, nil
+	}
+
+	for _, s := range casePassRules {
+		cr, err := parseCaseRule(s, "pass")
+		if err != nil {
+			return nil, err
+		}
+		rules.CaseResultRules = append(rules.CaseResultRules, cr)
+	}
+	for _, s := range caseFailRules {
+		cr, err := parseCaseRule(s, "fail")
+		if err != nil {
+			return nil, err
+		}
+		rules.CaseResultRules = append(rules.CaseResultRules, cr)
+	}
+
+	return rules, nil
 }
 
 // emuTracker 管理仿真扫描的状态机。

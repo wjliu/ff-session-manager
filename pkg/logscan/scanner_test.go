@@ -778,6 +778,119 @@ func TestEmuRulesCompileIdempotent(t *testing.T) {
 	}
 }
 
+func TestNewEmuRules(t *testing.T) {
+	rules, err := NewEmuRules(
+		[]string{`START`},
+		[]string{`END`},
+		[]string{"case_passed,1,Case (.*) is completed"},
+		[]string{"case_failed,2,Case (.*) is failed"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules.BeginRules) != 1 || rules.BeginRules[0] != "START" {
+		t.Errorf("unexpected begin_rules: %v", rules.BeginRules)
+	}
+	if len(rules.EndRules) != 1 || rules.EndRules[0] != "END" {
+		t.Errorf("unexpected end_rules: %v", rules.EndRules)
+	}
+	if len(rules.CaseResultRules) != 2 {
+		t.Fatalf("expected 2 case result rules, got %d", len(rules.CaseResultRules))
+	}
+	if rules.CaseResultRules[0].Result != "pass" || rules.CaseResultRules[0].Keyword != "case_passed" || rules.CaseResultRules[0].Priority != 1 {
+		t.Errorf("unexpected pass rule: %+v", rules.CaseResultRules[0])
+	}
+	if rules.CaseResultRules[1].Result != "fail" || rules.CaseResultRules[1].Keyword != "case_failed" || rules.CaseResultRules[1].Priority != 2 {
+		t.Errorf("unexpected fail rule: %+v", rules.CaseResultRules[1])
+	}
+
+	// 验证可以正常编译
+	if err := rules.compile(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewEmuRulesEmptyBeginRules(t *testing.T) {
+	rules, err := NewEmuRules(
+		nil,
+		[]string{`END`},
+		[]string{"ok,1,Case (.*) done"},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules.BeginRules) != 0 {
+		t.Errorf("expected empty begin_rules, got %v", rules.BeginRules)
+	}
+	if len(rules.EndRules) != 1 {
+		t.Errorf("expected 1 end_rule, got %d", len(rules.EndRules))
+	}
+	if len(rules.CaseResultRules) != 1 {
+		t.Fatalf("expected 1 case rule, got %d", len(rules.CaseResultRules))
+	}
+}
+
+func TestNewEmuRulesInvalidPriority(t *testing.T) {
+	_, err := NewEmuRules(
+		nil,
+		[]string{`END`},
+		[]string{"ok,abc,Case (.*) done"},
+		nil,
+	)
+	if err == nil {
+		t.Error("expected error for invalid priority")
+	}
+}
+
+func TestNewEmuRulesInvalidFormat(t *testing.T) {
+	_, err := NewEmuRules(
+		nil,
+		[]string{`END`},
+		[]string{"only_one_field"},
+		nil,
+	)
+	if err == nil {
+		t.Error("expected error for invalid format")
+	}
+}
+
+func TestNewEmuRulesIntegration(t *testing.T) {
+	// 使用 NewEmuRules 构造的规则进行完整扫描
+	content := "START\nCase test_001 is completed\nCase test_002 is failed\nEND\n"
+	path := createTempLogFile(t, content)
+
+	rules, err := NewEmuRules(
+		[]string{`START`},
+		[]string{`END`},
+		[]string{"case_passed,1,Case (.*) is completed"},
+		[]string{"case_failed,1,Case (.*) is failed"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scanner := NewEmuScanner(path)
+	ctx := context.Background()
+
+	emuResults, state, err := scanner.Scan(ctx, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emuResults) != 2 {
+		t.Fatalf("expected 2 emu results, got %d", len(emuResults))
+	}
+	if emuResults[0].CaseName != "test_001" || emuResults[0].Result != "pass" {
+		t.Errorf("unexpected result 0: %+v", emuResults[0])
+	}
+	if emuResults[1].CaseName != "test_002" || emuResults[1].Result != "fail" {
+		t.Errorf("unexpected result 1: %+v", emuResults[1])
+	}
+	if !state.BeginMatched || !state.EndMatched {
+		t.Error("expected BeginMatched and EndMatched")
+	}
+}
+
 func TestEmuTrackerSessionStart(t *testing.T) {
 	rules := &EmuRules{
 		BeginRules: []string{`Emulation Start!`},
