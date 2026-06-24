@@ -142,9 +142,10 @@ func (t *emuTracker) processLine(line string) {
 		matches := cr.detailRe.FindStringSubmatch(line)
 		if len(matches) > 1 {
 			t.results = append(t.results, EmuCaseResult{
-				CaseName: matches[1],
-				Result:   cr.Result,
-				Keyword:  cr.Keyword,
+				CaseName:    matches[1],
+				Result:      cr.Result,
+				Keyword:     cr.Keyword,
+				MatchedLine: line,
 			})
 			return
 		}

@@ -131,6 +131,8 @@ type EmuCaseResult struct {
 	Result string
 	// Keyword 关键字标识，由 case_result_rules 中匹配的 keyword 字段定义。
 	Keyword string
+	// MatchedLine 匹配的原始行内容。
+	MatchedLine string
 }
 
 // EmuScanState 表示一次 Scan 调用后仿真状态机的状态。
