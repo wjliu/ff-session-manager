@@ -443,36 +443,40 @@ func TestScanSafeIOContextCanceled(t *testing.T) {
 
 // ---------- EmuScanner ----------
 
-// testEmuRules 返回一个永不会匹配日志内容的仿真规则，用于测试中仅验证常规扫描结果。
-func testEmuRules() *EmuRules {
+// testCaseEmuRules 返回用于测试的仿真规则，匹配 "Case <name> is completed" 模式。
+func testCaseEmuRules() *EmuRules {
 	return &EmuRules{
 		EndRules: []string{`___NEVER___`},
 		CaseResultRules: []CaseRule{
-			{Result: "x", Keyword: "x", Priority: 1, Pattern: `___NEVER___`},
+			{Result: "pass", Keyword: "ok", Priority: 1, Pattern: `Case (\w+) is completed`},
 		},
 	}
 }
 
 func TestEmuScanner(t *testing.T) {
-	content := "INFO: start\nERROR: first error\nINFO: middle\n"
+	content := "Case test_001 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, state, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if len(emuResults) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(emuResults))
 	}
-	if results[0].MatchedLine != "ERROR: first error" {
-		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	if emuResults[0].CaseName != "test_001" {
+		t.Errorf("unexpected case name: %q", emuResults[0].CaseName)
+	}
+	if !state.BeginMatched {
+		t.Error("expected BeginMatched=true (empty BeginRules activates on first line)")
+	}
+	if !state.InSession {
+		t.Error("expected InSession=true (session active after begin)")
 	}
 
 	firstOffset := scanner.Offset()
@@ -484,21 +488,21 @@ func TestEmuScanner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.WriteString("ERROR: second error\n")
+	_, err = f.WriteString("Case test_002 is completed\n")
 	f.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, state, err = scanner.Scan(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result from second scan, got %d", len(results))
+	if len(emuResults) != 1 {
+		t.Fatalf("expected 1 result from second scan, got %d", len(emuResults))
 	}
-	if results[0].MatchedLine != "ERROR: second error" {
-		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	if emuResults[0].CaseName != "test_002" {
+		t.Errorf("unexpected case name: %q", emuResults[0].CaseName)
 	}
 	if scanner.Offset() <= firstOffset {
 		t.Error("offset should have advanced")
@@ -506,50 +510,46 @@ func TestEmuScanner(t *testing.T) {
 }
 
 func TestEmuScannerNoNewContent(t *testing.T) {
-	content := "ERROR: only error\n"
+	content := "Case test_001 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if len(emuResults) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(emuResults))
 	}
 
-	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err = scanner.Scan(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(results))
+	if len(emuResults) != 0 {
+		t.Errorf("expected 0 results, got %d", len(emuResults))
 	}
 }
 
 func TestEmuScannerReset(t *testing.T) {
-	content := "ERROR: first\nERROR: second\n"
+	content := "Case test_001 is completed\nCase test_002 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if len(emuResults) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(emuResults))
 	}
 
 	scanner.Reset()
@@ -557,106 +557,101 @@ func TestEmuScannerReset(t *testing.T) {
 		t.Errorf("expected offset 0 after reset, got %d", scanner.Offset())
 	}
 
-	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err = scanner.Scan(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results after reset, got %d", len(results))
+	if len(emuResults) != 2 {
+		t.Fatalf("expected 2 results after reset, got %d", len(emuResults))
 	}
 }
 
 func TestEmuScannerFileTruncation(t *testing.T) {
-	content := "ERROR: first\nERROR: second\nERROR: third\n"
+	content := "Case test_001 is completed\nCase test_002 is completed\nCase test_003 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
+	if len(emuResults) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(emuResults))
 	}
 
-	if err := os.WriteFile(path, []byte("ERROR: new\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("Case new_case is completed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, results, err = scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err = scanner.Scan(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result after truncation, got %d", len(results))
+	if len(emuResults) != 1 {
+		t.Fatalf("expected 1 result after truncation, got %d", len(emuResults))
+	}
+	if emuResults[0].CaseName != "new_case" {
+		t.Errorf("expected case new_case after truncation, got %s", emuResults[0].CaseName)
 	}
 }
 
 func TestEmuScannerNonExistentFile(t *testing.T) {
 	scanner := NewEmuScanner("/nonexistent/path/test.log")
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	ctx := context.Background()
-	emuResults, scanResults, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, state, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(emuResults) != 0 {
 		t.Errorf("expected 0 emu results, got %d", len(emuResults))
 	}
-	if len(scanResults) != 0 {
-		t.Errorf("expected 0 scan results, got %d", len(scanResults))
+	if state.BeginMatched || state.EndMatched || state.InSession {
+		t.Error("expected zero state for non-existent file")
 	}
 }
 
 func TestEmuScannerSafeIO(t *testing.T) {
-	content := "ERROR: first\n"
+	content := "Case test_001 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewSafeEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if len(emuResults) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(emuResults))
 	}
-	if results[0].MatchedLine != "ERROR: first" {
-		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	if emuResults[0].CaseName != "test_001" {
+		t.Errorf("unexpected case name: %q", emuResults[0].CaseName)
 	}
 }
 
 func TestEmuScannerResumeFromOffset(t *testing.T) {
-	content := "ERROR: first\nERROR: second\nERROR: third\n"
+	content := "Case test_001 is completed\nCase test_002 is completed\nCase test_003 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
+	if len(emuResults) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(emuResults))
 	}
 
 	savedOffset := scanner.Offset()
@@ -665,65 +660,65 @@ func TestEmuScannerResumeFromOffset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.WriteString("ERROR: fourth\nERROR: fifth\n")
+	_, err = f.WriteString("Case test_004 is completed\nCase test_005 is completed\n")
 	f.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Simulate restart: create new scanner at saved offset
+	// Simulate restart: create new scanner at saved offset.
+	// Must pass emuRules on first call (new scanner, new tracker).
 	scanner2 := NewEmuScannerAtOffset(path, savedOffset)
-	_, results, err = scanner2.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err = scanner2.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 new results, got %d", len(results))
+	if len(emuResults) != 2 {
+		t.Fatalf("expected 2 new results, got %d", len(emuResults))
 	}
-	if results[0].MatchedLine != "ERROR: fourth" {
-		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	if emuResults[0].CaseName != "test_004" {
+		t.Errorf("unexpected case name: %q", emuResults[0].CaseName)
 	}
-	if results[1].MatchedLine != "ERROR: fifth" {
-		t.Errorf("unexpected match: %q", results[1].MatchedLine)
+	if emuResults[1].CaseName != "test_005" {
+		t.Errorf("unexpected case name: %q", emuResults[1].CaseName)
 	}
 }
 
 func TestEmuScannerResumeTruncationReset(t *testing.T) {
-	content := "ERROR: first\nERROR: second\n"
+	content := "Case test_001 is completed\nCase test_002 is completed\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 10},
-	}
+	emuRules := testCaseEmuRules()
 
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	_, results, err := scanner.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+	if len(emuResults) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(emuResults))
 	}
 	savedOffset := scanner.Offset()
 
 	// File truncated to smaller size
-	if err := os.WriteFile(path, []byte("ERROR: new only\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("Case new_only is completed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Resume with stale offset > new file size — should auto-reset
+	// Resume with stale offset > new file size — should auto-reset.
+	// Must pass emuRules on first call (new scanner, new tracker).
 	scanner2 := NewEmuScannerAtOffset(path, savedOffset)
-	_, results, err = scanner2.Scan(ctx, rules, testEmuRules(), nil)
+	emuResults, _, err = scanner2.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result after truncation reset, got %d", len(results))
+	if len(emuResults) != 1 {
+		t.Fatalf("expected 1 result after truncation reset, got %d", len(emuResults))
 	}
-	if results[0].MatchedLine != "ERROR: new only" {
-		t.Errorf("unexpected match: %q", results[0].MatchedLine)
+	if emuResults[0].CaseName != "new_only" {
+		t.Errorf("unexpected case name: %q", emuResults[0].CaseName)
 	}
 }
 
@@ -1005,9 +1000,6 @@ func TestEmuScannerScan(t *testing.T) {
 	content := "START\nCase test_001 is completed\nCase test_002 is failed\nEND\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-	}
 	emuRules := &EmuRules{
 		BeginRules: []string{`START`},
 		EndRules:   []string{`END`},
@@ -1020,7 +1012,7 @@ func TestEmuScannerScan(t *testing.T) {
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, scanResults, err := scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, state, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1033,8 +1025,14 @@ func TestEmuScannerScan(t *testing.T) {
 	if emuResults[1].CaseName != "test_002" || emuResults[1].Result != "fail" {
 		t.Errorf("unexpected emu result 1: %+v", emuResults[1])
 	}
-	if len(scanResults) != 0 {
-		t.Errorf("expected 0 scan results, got %d", len(scanResults))
+	if !state.BeginMatched {
+		t.Error("expected BeginMatched=true")
+	}
+	if !state.EndMatched {
+		t.Error("expected EndMatched=true")
+	}
+	if state.InSession {
+		t.Error("expected InSession=false (session ended)")
 	}
 }
 
@@ -1042,9 +1040,6 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 	content := "START\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-	}
 	emuRules := &EmuRules{
 		BeginRules: []string{`START`},
 		EndRules:   []string{`END`},
@@ -1056,12 +1051,18 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, _, err := scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, state, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(emuResults) != 0 {
 		t.Fatalf("expected 0 emu results (no case matched yet), got %d", len(emuResults))
+	}
+	if !state.BeginMatched {
+		t.Error("expected BeginMatched=true after START")
+	}
+	if !state.InSession {
+		t.Error("expected InSession=true after START")
 	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
@@ -1074,7 +1075,7 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	emuResults, _, err = scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, state, err = scanner.Scan(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1084,15 +1085,21 @@ func TestEmuScannerScanStatePersistence(t *testing.T) {
 	if emuResults[0].CaseName != "test_001" || emuResults[0].Result != "pass" {
 		t.Errorf("unexpected emu result: %+v", emuResults[0])
 	}
+	if state.BeginMatched {
+		t.Error("expected BeginMatched=false (already started)")
+	}
+	if !state.EndMatched {
+		t.Error("expected EndMatched=true after END")
+	}
+	if state.InSession {
+		t.Error("expected InSession=false after END")
+	}
 }
 
 func TestEmuScannerScanTruncationReset(t *testing.T) {
 	content := "START\nCase test_001 is completed\nCase test_002 is completed\nEND\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-	}
 	emuRules := &EmuRules{
 		BeginRules: []string{`START`},
 		EndRules:   []string{`END`},
@@ -1104,7 +1111,7 @@ func TestEmuScannerScanTruncationReset(t *testing.T) {
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, _, err := scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, _, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1116,7 +1123,7 @@ func TestEmuScannerScanTruncationReset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	emuResults, _, err = scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, _, err = scanner.Scan(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1130,9 +1137,6 @@ func TestEmuScannerScanTruncationReset(t *testing.T) {
 
 func TestEmuScannerScanFileNotFound(t *testing.T) {
 	scanner := NewEmuScanner("/nonexistent/path/emu.log")
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-	}
 	emuRules := &EmuRules{
 		EndRules: []string{`END`},
 		CaseResultRules: []CaseRule{
@@ -1141,25 +1145,23 @@ func TestEmuScannerScanFileNotFound(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	emuResults, scanResults, err := scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, state, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(emuResults) != 0 {
 		t.Errorf("expected 0 emu results, got %d", len(emuResults))
 	}
-	if len(scanResults) != 0 {
-		t.Errorf("expected 0 scan results, got %d", len(scanResults))
+	if state.BeginMatched || state.EndMatched || state.InSession {
+		t.Error("expected zero state for non-existent file")
 	}
 }
 
-func TestEmuScannerScanWithScanResults(t *testing.T) {
-	content := "START\nERROR: something broke\nCase test_001 is completed\nEND\n"
+func TestEmuScannerScanWithNonCaseLines(t *testing.T) {
+	// 验证非 case 匹配行（如普通日志行）不会干扰仿真状态追踪。
+	content := "START\nERROR: something broke\nINFO: processing\nCase test_001 is completed\nEND\n"
 	path := createTempLogFile(t, content)
 
-	rules := []Rule{
-		{Result: "error", Keyword: "ERROR", Detail: `ERROR:.*`, Priority: 1},
-	}
 	emuRules := &EmuRules{
 		BeginRules: []string{`START`},
 		EndRules:   []string{`END`},
@@ -1171,17 +1173,20 @@ func TestEmuScannerScanWithScanResults(t *testing.T) {
 	scanner := NewEmuScanner(path)
 	ctx := context.Background()
 
-	emuResults, scanResults, err := scanner.Scan(ctx, rules, emuRules, nil)
+	emuResults, state, err := scanner.Scan(ctx, emuRules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(emuResults) != 1 {
 		t.Fatalf("expected 1 emu result, got %d", len(emuResults))
 	}
-	if len(scanResults) != 1 {
-		t.Fatalf("expected 1 scan result, got %d", len(scanResults))
+	if emuResults[0].CaseName != "test_001" || emuResults[0].Result != "pass" {
+		t.Errorf("unexpected emu result: %+v", emuResults[0])
 	}
-	if scanResults[0].MatchedLine != "ERROR: something broke" {
-		t.Errorf("unexpected scan match: %q", scanResults[0].MatchedLine)
+	if !state.BeginMatched {
+		t.Error("expected BeginMatched=true")
+	}
+	if !state.EndMatched {
+		t.Error("expected EndMatched=true")
 	}
 }

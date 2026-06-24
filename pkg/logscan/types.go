@@ -132,3 +132,14 @@ type EmuCaseResult struct {
 	// Keyword 关键字标识，由 case_result_rules 中匹配的 keyword 字段定义。
 	Keyword string
 }
+
+// EmuScanState 表示一次 Scan 调用后仿真状态机的状态。
+// 调用方可据此判断 emulation session 是否已开始或已结束。
+type EmuScanState struct {
+	// BeginMatched 表示本轮扫描中匹配到了 BeginRules。
+	BeginMatched bool
+	// EndMatched 表示本轮扫描中匹配到了 EndRules。
+	EndMatched bool
+	// InSession 表示扫描结束后 emulation session 是否处于激活状态。
+	InSession bool
+}
