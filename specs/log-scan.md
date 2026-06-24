@@ -3,7 +3,7 @@
 基于扫描日志文件的内容提取工具，提供两种扫描模式：
 
 1. **Scan** — 一次性全文扫描，返回优先级最高的单条命中结果
-2. **EmuScanner** — 仿真日志尾随扫描，持续追踪 emulation session 与 case 结果，同时返回常规规则命中
+2. **EmuScanner** — 仿真日志尾随扫描，持续追踪 emulation session 与 case 结果
 
 
 ## 采集规则定义
@@ -97,20 +97,17 @@ func NewSafeEmuScanner(filePath string) *EmuScanner        // NFS/IO 卡死防�
 ### Scan 方法
 
 ```go
-func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules, config *ScanConfig) ([]EmuCaseResult, []ScanResult, error)
+func (s *EmuScanner) Scan(ctx context.Context, emuRules *EmuRules) ([]EmuCaseResult, EmuScanState, error)
 ```
 
-- `rules` — 常规匹配规则，命中后返回 `[]ScanResult`
-- `emuRules` — 仿真追踪规则，驱动状态机产出 `[]EmuCaseResult`
-- 首次调用以 emuRules 初始化内部追踪器，后续调用沿用已有追踪器
+- `emuRules` — 仿真追踪规则，首次调用时初始化内部状态机；后续调用沿用已有追踪器，可传 `nil`。
 
 ### 工作机制
 
 - 每次调用从上次结束的字节偏移继续，无需手动指定，确保日志不遗漏。
 - 文件截断时自动检测并重置偏移与追踪器状态。
-- 新行逐条送入 emulation 状态机：检测 session 起止 → 提取 case 名称 → 检测 case 起止 → 分类 case 结果。
-- 同时通过常规规则匹配，返回命中的 `ScanResult` 列表。
-- 优先级仅用于单行决胜（同一行命中多条规则时归类）和 case 结果分类决胜。
+- 新行逐条送入 emulation 状态机：检测 session 起止（BeginRules → EndRules）→ 分类 case 结果（CaseResultRules）。
+- 优先级用于 case 结果分类决胜（同一行命中多条 CaseResultRule 时按 Priority 升序匹配，数值越小优先级越高）。
 
 ### 状态管理
 
@@ -121,8 +118,10 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 ### 输出
 
 - `[]EmuCaseResult` — 本次新完成的 case 结果列表（可能为空）。每条包含 `CaseName`、`Result`、`Keyword`
-- `[]ScanResult` — 本次新命中的常规规则结果列表（可能为空）
-- 每条 ScanResult 包含命中的规则信息、匹配行内容、上下文行内容及扩展字段内容
+- `EmuScanState` — 本轮扫描中状态机的状态变化，包含三个字段：
+  - `BeginMatched` — 本轮是否匹配到了 BeginRules
+  - `EndMatched` — 本轮是否匹配到了 EndRules
+  - `InSession` — 扫描结束后是否处于 emulation session 中
 
 
 ---
@@ -181,12 +180,11 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 
 `EmuScanner` 是有状态的扫描器，跟随日志文件增长进行 emulation 追踪。提供 `NewEmuScanner`（快速 I/O）和 `NewSafeEmuScanner`（NFS 防护）两种构造。
 
-`Scan(ctx, rules, emuRules, config)` 方法：
-1. 首次调用以 emuRules 初始化追踪器，后续调用沿用已有追踪器。
+`Scan(ctx, emuRules)` 方法：
+1. 首次调用以 emuRules 初始化追踪器，后续调用沿用已有追踪器（emuRules 可传 nil）。
 2. 打开文件、检测截断（截断时同步重置追踪器）、Seek 到 offset、读取新行。
 3. 新行逐条送入 `emuTracker.processLine` 驱动状态机。
-4. 同时通过 `scanLines` 进行常规规则匹配。
-5. 返回 `([]EmuCaseResult, []ScanResult, error)`。
+4. 返回 `([]EmuCaseResult, EmuScanState, error)`。`EmuScanState` 包含 `BeginMatched`、`EndMatched`、`InSession` 三个字段，表示本轮扫描中的状态变化。
 
 **状态管理**：`path`、`offset`（字节偏移）、`sync.Mutex` 保护。`Reset` 重置 offset 和追踪器；`Offset` 返回当前偏移。
 
@@ -195,16 +193,17 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 **EmuRules 编译**（`compile`）：预编译所有正则切片，CaseResultRules 按 Priority 升序排列。
 
 **emuTracker 状态机**（`processLine`）：
-1. 未激活时检查 `beginRe` → 激活 session
+1. 未激活时检查 `beginRe` → 激活 session（`beginRe` 为空时从第一行即激活）
 2. 激活后优先检查 `endRe` → 结束 session
 3. 激活后按优先级匹配 `sortedResultRules` → 命中后从 Pattern 捕获组提取 case 名称，产出 `EmuCaseResult`（`Result`/`Keyword` 分别取自 `CaseRule.Result`/`CaseRule.Keyword`）
+4. `flushState()` 返回并清空本轮的状态变化标志
 
 ### 测试覆盖 (`scanner_test.go`)
 
-共 45 个测试用例，覆盖：
+共 46 个测试用例，覆盖：
 - 规则编译、排序、匹配、扩展字段/上下文提取、起始点控制
 - 全文扫描（基本功能、上下文、起始点过滤、优先级、无匹配、空文件、context 取消、SafeIO）
-- EmuScanner（基本扫描、无新内容、Reset、截断检测、文件不存在、SafeIO、offset 恢复、恢复后截断重置）
+- EmuScanner（基本扫描、增量追踪、无新内容、Reset、截断检测、文件不存在、SafeIO、offset 恢复、恢复后截断重置）
 - EmuRules 编译（正常、无效正则、空 result_rules、幂等）
 - emuTracker 状态机（session 起止、case 结果匹配、优先级决胜、多 case、idle 跳过、多 session、reset）
-- EmuScanner 集成（emu+scan 结果、状态跨调用保持、截断重置）
+- EmuScanner 集成（case 匹配、状态跨调用保持、截断重置、非 case 行干扰测试）

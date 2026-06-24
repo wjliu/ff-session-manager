@@ -39,20 +39,19 @@ func NewEmuScannerAtOffset(filePath string, offset int64) *EmuScanner {
 }
 
 // Scan 从上次扫描结束位置继续扫描文件，并进行仿真状态追踪。
-// 返回仿真 case 结果列表和常规扫描结果列表。
-// 首次调用时使用给定的 emuRules 初始化追踪器，后续调用沿用已有追踪器。
+// 返回仿真 case 结果列表和状态机状态。
+// 首次调用时使用给定的 emuRules 初始化追踪器，后续调用沿用已有追踪器（emuRules 可传 nil）。
 // 如果文件未发生变化或没有新匹配，返回空切片。
-func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules, config *ScanConfig) ([]EmuCaseResult, []ScanResult, error) {
+func (s *EmuScanner) Scan(ctx context.Context, emuRules *EmuRules) ([]EmuCaseResult, EmuScanState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := compileRules(rules); err != nil {
-		return nil, nil, err
-	}
-
 	if s.emuTracker == nil {
+		if emuRules == nil {
+			return nil, EmuScanState{}, fmt.Errorf("emuRules must not be nil on first Scan call")
+		}
 		if err := emuRules.compile(); err != nil {
-			return nil, nil, err
+			return nil, EmuScanState{}, err
 		}
 		s.emuTracker = &emuTracker{rules: emuRules}
 	}
@@ -60,15 +59,15 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 	f, err := openFile(ctx, s.path, s.safeIO)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, nil
+			return nil, EmuScanState{}, nil
 		}
-		return nil, nil, fmt.Errorf("open file %s: %w", s.path, err)
+		return nil, EmuScanState{}, fmt.Errorf("open file %s: %w", s.path, err)
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, nil, fmt.Errorf("stat file %s: %w", s.path, err)
+		return nil, EmuScanState{}, fmt.Errorf("stat file %s: %w", s.path, err)
 	}
 	if fi.Size() < s.offset {
 		s.offset = 0
@@ -76,31 +75,31 @@ func (s *EmuScanner) Scan(ctx context.Context, rules []Rule, emuRules *EmuRules,
 	}
 
 	if err := seekFile(ctx, f, s.offset, s.safeIO); err != nil {
-		return nil, nil, fmt.Errorf("seek file %s: %w", s.path, err)
+		return nil, EmuScanState{}, fmt.Errorf("seek file %s: %w", s.path, err)
 	}
 
 	lines, offsets, err := readLines(ctx, f, s.offset, s.safeIO)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read file %s: %w", s.path, err)
+		return nil, EmuScanState{}, fmt.Errorf("read file %s: %w", s.path, err)
 	}
 
 	if len(lines) == 0 {
-		return nil, nil, nil
+		return nil, s.emuTracker.flushState(), nil
 	}
 
 	for _, line := range lines {
 		s.emuTracker.processLine(line)
 	}
 
-	scanResults := scanLines(lines, offsets, rules, config)
 	emuResults := s.emuTracker.flushResults()
+	state := s.emuTracker.flushState()
 
 	if len(offsets) > 0 {
 		lastLine := lines[len(lines)-1]
 		s.offset = offsets[len(offsets)-1] + int64(len(lastLine)) + 1
 	}
 
-	return emuResults, scanResults, nil
+	return emuResults, state, nil
 }
 
 // Reset 重置扫描位置到文件开头，同时重置仿真状态。

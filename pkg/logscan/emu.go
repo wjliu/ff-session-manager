@@ -52,28 +52,39 @@ func (e *EmuRules) compile() error {
 // emuTracker 管理仿真扫描的状态机。
 // emuActive 为 true 时表示处于 emulation session 中。
 type emuTracker struct {
-	rules     *EmuRules
-	emuActive bool
-	results   []EmuCaseResult
+	rules       *EmuRules
+	emuActive   bool
+	beginSeen   bool
+	endSeen     bool
+	results     []EmuCaseResult
 }
 
 // processLine 处理一行日志，驱动状态机。
 func (t *emuTracker) processLine(line string) {
 	if !t.emuActive {
 		// 1. 未激活时检查 beginRe → 激活 session
-		for _, re := range t.rules.beginRe {
-			if re.MatchString(line) {
-				t.emuActive = true
-				return
+		if len(t.rules.beginRe) == 0 {
+			// BeginRules 为空时，从第一行即视为 session 开始
+			t.emuActive = true
+			t.beginSeen = true
+			// 继续往下，在同一条行检查 endRe 和 CaseResultRules
+		} else {
+			for _, re := range t.rules.beginRe {
+				if re.MatchString(line) {
+					t.emuActive = true
+					t.beginSeen = true
+					return
+				}
 			}
+			return
 		}
-		return
 	}
 
 	// 2. 激活后优先检查 endRe → 结束 session
 	for _, re := range t.rules.endRe {
 		if re.MatchString(line) {
 			t.emuActive = false
+			t.endSeen = true
 			return
 		}
 	}
@@ -99,8 +110,22 @@ func (t *emuTracker) flushResults() []EmuCaseResult {
 	return r
 }
 
+// flushState 返回本轮扫描中状态机的状态变化，并重置 beginSeen/endSeen。
+func (t *emuTracker) flushState() EmuScanState {
+	s := EmuScanState{
+		BeginMatched: t.beginSeen,
+		EndMatched:   t.endSeen,
+		InSession:    t.emuActive,
+	}
+	t.beginSeen = false
+	t.endSeen = false
+	return s
+}
+
 // reset 重置状态机。
 func (t *emuTracker) reset() {
 	t.emuActive = false
+	t.beginSeen = false
+	t.endSeen = false
 	t.results = nil
 }
